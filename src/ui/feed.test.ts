@@ -9,6 +9,7 @@ import {
   firstContact,
   factionCollapsed,
   worldFortune,
+  sectorConcluded,
   type WorldEvent,
 } from "../sim/events";
 import { createFeed, toDispatch } from "./feed";
@@ -81,6 +82,9 @@ group("toDispatch", () => {
     expect(toDispatch(firstContact(4, helion, iron)).kind).toBe(
       "First Contact",
     );
+    const epilogue = toDispatch(sectorConcluded(40, "unified", helion));
+    expect(epilogue.category).toBe("conclusion");
+    expect(epilogue.kind).toBe("Epilogue");
   });
 
   it("leaves location undefined when the event carries none", () => {

@@ -34,18 +34,25 @@ if (app) {
     feed.reset(engine.foundingEvents);
   };
 
-  /** True while at least one faction still holds territory worth simulating. */
-  const worldIsLive = (eng: Engine): boolean =>
-    Object.values(eng.sector.factions).some(
-      (f) => f.ownedWorldIds.length > 0,
-    );
-
   const controls = createControls({
     onStep: () => {
-      if (!engine) return false;
-      feed.push(engine.tick());
-      // Stop the loop once the sector has gone dark — empty ticks make dull news.
-      return worldIsLive(engine);
+      if (!engine) return { cycle: 0, dispatches: 0 };
+      const events = engine.tick();
+      feed.push(events);
+      // Report the cycle and event count so the controls can show time passing
+      // (and flag quiet cycles); surface a concluded run as an explicit end so
+      // the loop stops deliberately rather than ticking on in silence.
+      const status = engine.getStatus();
+      return {
+        cycle: engine.getTick(),
+        dispatches: events.length,
+        ended:
+          status.kind === "unified"
+            ? { kind: "unified", victor: status.victor.name }
+            : status.kind === "dark"
+              ? { kind: "dark" }
+              : undefined,
+      };
     },
     onGenerate: generate,
   });

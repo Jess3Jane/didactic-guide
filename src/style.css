@@ -111,6 +111,22 @@ body {
   outline-offset: 1px;
 }
 
+.controls__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.controls__btn:disabled:hover {
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.controls__btn--play:disabled:hover {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .controls__btn--play {
   min-width: 4.5rem;
   font-weight: 600;
@@ -153,6 +169,90 @@ body {
 .controls__select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* --- Status readout (cycle counter + run state) -------------------------- */
+
+.controls__group--status {
+  gap: 0.45rem;
+  font-size: 0.74rem;
+}
+
+.controls__cycle {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+  color: var(--fg);
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+}
+
+/* A brief glow as the counter ticks, so time is visibly passing. */
+.controls__cycle.is-tick {
+  animation: cycle-pulse 0.5s ease-out;
+}
+
+@keyframes cycle-pulse {
+  from {
+    color: var(--accent);
+    background: rgba(79, 209, 197, 0.18);
+  }
+  to {
+    color: var(--fg);
+    background: transparent;
+  }
+}
+
+.controls__quiet {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.controls__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel-2);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+/* A leading dot whose colour carries the state at a glance. */
+.controls__state::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.controls__state--running {
+  color: var(--accent-green);
+  border-color: var(--accent-green);
+}
+
+.controls__state--paused {
+  color: var(--accent-warm);
+  border-color: var(--accent-warm);
+}
+
+.controls__state--ended {
+  color: var(--accent-red);
+  border-color: var(--accent-red);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .controls__cycle.is-tick {
+    animation: none;
+  }
 }
 
 .controls__seed-label {
@@ -318,6 +418,23 @@ body {
 }
 .dispatch--collapse .dispatch__kind {
   color: var(--accent-red);
+}
+
+/* The terminal dispatch — a quiet, full-width epilogue that closes the run. */
+.dispatch--conclusion {
+  border-color: var(--accent);
+  border-left-color: var(--accent);
+  background: linear-gradient(
+    180deg,
+    rgba(79, 209, 197, 0.08),
+    var(--bg-panel)
+  );
+}
+.dispatch--conclusion .dispatch__kind {
+  color: var(--accent);
+}
+.dispatch--conclusion .dispatch__summary {
+  font-style: italic;
 }
 
 @media (prefers-reduced-motion: reduce) {

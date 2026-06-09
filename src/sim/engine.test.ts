@@ -61,6 +61,78 @@ describe("createEngine", () => {
     engine.tick();
     expect(engine.getTick()).toBe(2);
   });
+
+  it("opens with an ongoing status", () => {
+    expect(engineFromSeed("dawn").getStatus().kind).toBe("ongoing");
+  });
+});
+
+describe("concluding a run (issue #22)", () => {
+  // Most sectors sustain indefinitely (issue #19), so a conclusion is the
+  // exception. These seeds were chosen because they resolve to a single
+  // survivor within a few cycles, keeping the terminal-contract tests fast.
+  const CONCLUDING_SEEDS = ["seed-80", "seed-125", "seed-203", "seed-338"];
+
+  /** Tick until the run concludes or `cap` cycles pass; return the full log. */
+  const runToConclusion = (engine: Engine, cap = 80): WorldEvent[] => {
+    const log: WorldEvent[] = [];
+    for (let i = 0; i < cap && engine.getStatus().kind === "ongoing"; i++) {
+      log.push(...engine.tick());
+    }
+    return log;
+  };
+
+  it("announces the conclusion exactly once and then freezes the clock", () => {
+    const engine = engineFromSeed(CONCLUDING_SEEDS[0]);
+    const log = runToConclusion(engine);
+    expect(engine.getStatus().kind).not.toBe("ongoing");
+
+    // Exactly one terminal dispatch, and it is the last event emitted.
+    const endings = log.filter((e) => e.type === "SECTOR_CONCLUDED");
+    expect(endings).toHaveLength(1);
+    expect(log[log.length - 1].type).toBe("SECTOR_CONCLUDED");
+
+    // The clock is frozen: further ticks do nothing and emit nothing.
+    const finalTick = engine.getTick();
+    const status = engine.getStatus();
+    expect(engine.tick()).toEqual([]);
+    expect(engine.getTick()).toBe(finalTick);
+    expect(engine.getStatus()).toEqual(status);
+  });
+
+  it("matches the terminal event's outcome to the reported status", () => {
+    for (const seed of CONCLUDING_SEEDS) {
+      const engine = engineFromSeed(seed);
+      const log = runToConclusion(engine);
+      const status = engine.getStatus();
+      expect(status.kind).not.toBe("ongoing");
+
+      const ending = log.find((e) => e.type === "SECTOR_CONCLUDED");
+      expect(ending).toBeDefined();
+      if (ending && ending.type === "SECTOR_CONCLUDED") {
+        expect(ending.data.outcome).toBe(status.kind);
+        if (status.kind === "unified") {
+          // The named victor is the lone faction still holding territory.
+          const standing = Object.values(engine.sector.factions).filter(
+            (f) => f.ownedWorldIds.length > 0,
+          );
+          expect(standing).toHaveLength(1);
+          expect(ending.actors[0].id).toBe(status.victor.id);
+          expect(status.victor.id).toBe(standing[0].id);
+        }
+      }
+    }
+  });
+
+  it("a lone-faction sector runs on rather than declaring victory", () => {
+    // With a single faction there is no contest to win, so it never "unifies" —
+    // it only ends if that faction itself falls (goes dark).
+    const engine = engineFromSeed("solo", { factionCount: 1 });
+    for (let i = 0; i < 80 && engine.getStatus().kind === "ongoing"; i++) {
+      engine.tick();
+    }
+    expect(engine.getStatus().kind).not.toBe("unified");
+  });
 });
 
 describe("determinism", () => {

@@ -11,13 +11,35 @@
 // loop itself is intentionally thin: a `setInterval` whose period comes from the
 // speed selector, calling back into the host once per cycle.
 
+/**
+ * How a run ended, surfaced as an explicit status (issue #22). `unified` —
+ * one faction (the `victor`) outlasted every rival; `dark` — the sector emptied.
+ */
+export type EndState =
+  | { kind: "unified"; victor: string }
+  | { kind: "dark" };
+
+/**
+ * The result of advancing the simulation one cycle. The cycle counter and the
+ * quiet-cycle hint are driven from this, so even a cycle that emits no dispatch
+ * still tells the viewer that time moved (issue #22).
+ */
+export interface StepOutcome {
+  /** The in-world cycle the engine is now on. */
+  cycle: number;
+  /** How many dispatches this cycle emitted; `0` marks a quiet cycle. */
+  dispatches: number;
+  /** Set once the run has concluded — ends the loop and shows the end state. */
+  ended?: EndState;
+}
+
 /** Callbacks the host wires to the engine + feed. */
 export interface ControlsCallbacks {
   /**
-   * Advance the simulation one cycle and render the results. Returns `false`
-   * when the run has nothing left to simulate, so the loop can pause itself.
+   * Advance the simulation one cycle and render the results, returning what
+   * happened so the controls can show the cycle, quiet cycles, and the end.
    */
-  onStep(): boolean;
+  onStep(): StepOutcome;
   /** Build a fresh sector from `seed` and reset the chronicle. */
   onGenerate(seed: string): void;
 }
@@ -112,6 +134,35 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
 
   timeGroup.append(playButton, stepButton, speedSelect);
 
+  // --- Status readout -------------------------------------------------------
+  //
+  // Always-on answer to "is it running, paused, or over — and what cycle?"
+  // (issue #22). The cycle counter advances on every tick so time is visibly
+  // passing even through quiet stretches; the state pill names the run state;
+  // the quiet hint flashes when a deliberate Step lands on an eventless cycle.
+
+  const statusGroup = doc.createElement("div");
+  statusGroup.className = "controls__group controls__group--status";
+  statusGroup.setAttribute("aria-label", "Simulation status");
+
+  const cycleReadout = doc.createElement("span");
+  cycleReadout.className = "controls__cycle";
+  cycleReadout.textContent = "Cycle 0";
+
+  const quietHint = doc.createElement("span");
+  quietHint.className = "controls__quiet";
+  quietHint.textContent = "quiet";
+  quietHint.hidden = true;
+
+  const stateBadge = doc.createElement("span");
+  stateBadge.className = "controls__state";
+  // Announce run-state changes (paused → running → ended), but not every cycle
+  // tick — the counter updates too often to narrate politely.
+  stateBadge.setAttribute("role", "status");
+  stateBadge.setAttribute("aria-live", "polite");
+
+  statusGroup.append(cycleReadout, quietHint, stateBadge);
+
   // --- Seed controls --------------------------------------------------------
 
   const seedGroup = doc.createElement("div");
@@ -141,12 +192,20 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
 
   seedGroup.append(seedLabel, randomizeButton, generateButton);
 
-  element.append(timeGroup, seedGroup);
+  element.append(timeGroup, statusGroup, seedGroup);
 
   // --- Playback state -------------------------------------------------------
 
   let playing = false;
   let timer: number | null = null;
+  let cycle = 0;
+  // The run's end state, once it concludes. While set, the loop can't run and
+  // Play/Step are disabled — a finished history is read, not advanced.
+  let ended: EndState | null = null;
+  let quietTimer: number | null = null;
+
+  /** How long the "quiet cycle" hint lingers after a stepped empty cycle. */
+  const QUIET_HINT_MS = 1400;
 
   const speedMs = (): number =>
     SPEEDS[Number(speedSelect.value)]?.ms ?? SPEEDS[DEFAULT_SPEED_INDEX].ms;
@@ -156,6 +215,58 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
     playButton.setAttribute("aria-pressed", String(playing));
   };
 
+  /** Reflect the run state in the cycle counter and the status pill. */
+  const renderStatus = (): void => {
+    cycleReadout.textContent = `Cycle ${cycle}`;
+    let label: string;
+    let mod: string;
+    if (ended) {
+      mod = "ended";
+      label = ended.kind === "unified" ? "Ended · Unified" : "Ended · Dark";
+      stateBadge.title =
+        ended.kind === "unified"
+          ? `Unified under the ${ended.victor}`
+          : "The sector has gone dark";
+    } else {
+      mod = playing ? "running" : "paused";
+      label = playing ? "Running" : "Paused";
+      stateBadge.title = "";
+    }
+    stateBadge.textContent = label;
+    stateBadge.className = `controls__state controls__state--${mod}`;
+  };
+
+  /** Enable Play/Step only while the run can still advance. */
+  const syncEnabled = (): void => {
+    const done = ended !== null;
+    playButton.disabled = done;
+    stepButton.disabled = done;
+  };
+
+  /** Restart the cycle counter's pulse so each advance reads as time passing. */
+  const pulseCycle = (): void => {
+    cycleReadout.classList.remove("is-tick");
+    void cycleReadout.offsetWidth; // force reflow so the animation replays
+    cycleReadout.classList.add("is-tick");
+  };
+
+  const clearQuietHint = (): void => {
+    quietHint.hidden = true;
+    if (quietTimer !== null) {
+      window.clearTimeout(quietTimer);
+      quietTimer = null;
+    }
+  };
+
+  const flashQuietHint = (): void => {
+    quietHint.hidden = false;
+    if (quietTimer !== null) window.clearTimeout(quietTimer);
+    quietTimer = window.setTimeout(() => {
+      quietHint.hidden = true;
+      quietTimer = null;
+    }, QUIET_HINT_MS);
+  };
+
   const stopTimer = (): void => {
     if (timer !== null) {
       window.clearInterval(timer);
@@ -163,21 +274,37 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
     }
   };
 
-  /** Run one cycle; pause the loop if the run has ended. */
-  const step = (): void => {
-    const more = callbacks.onStep();
-    if (!more) pause();
+  /**
+   * Advance the simulation one cycle and reflect the result. `manual` marks a
+   * deliberate Step, which earns the quiet-cycle hint when nothing happened;
+   * the auto-running loop relies on the pulsing counter alone so it stays calm.
+   */
+  const advance = (manual: boolean): void => {
+    if (ended) return;
+    const outcome = callbacks.onStep();
+    cycle = outcome.cycle;
+    clearQuietHint();
+    pulseCycle();
+    if (outcome.ended) {
+      ended = outcome.ended;
+      pause(); // a concluded history stops the loop deliberately
+      syncEnabled();
+    } else if (manual && outcome.dispatches === 0) {
+      flashQuietHint();
+    }
+    renderStatus();
   };
 
   const startTimer = (): void => {
     stopTimer();
-    timer = window.setInterval(step, speedMs());
+    timer = window.setInterval(() => advance(false), speedMs());
   };
 
   const play = (): void => {
-    if (playing) return;
+    if (playing || ended) return;
     playing = true;
     syncPlayButton();
+    renderStatus();
     startTimer();
   };
 
@@ -186,6 +313,7 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
     playing = false;
     stopTimer();
     syncPlayButton();
+    renderStatus();
   }
 
   // --- Wiring ---------------------------------------------------------------
@@ -196,8 +324,9 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
   });
 
   stepButton.addEventListener("click", () => {
+    if (ended) return;
     pause(); // stepping is a deliberate single advance
-    callbacks.onStep();
+    advance(true);
   });
 
   // Re-time a running loop the moment the speed changes.
@@ -207,6 +336,13 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
 
   const generate = (): void => {
     pause();
+    // A fresh world starts a fresh history: clear the end state and the clock
+    // before the host rebuilds the engine from cycle 0.
+    ended = null;
+    cycle = 0;
+    clearQuietHint();
+    syncEnabled();
+    renderStatus();
     callbacks.onGenerate(seedInput.value.trim());
   };
 
@@ -226,6 +362,8 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
   });
 
   syncPlayButton();
+  syncEnabled();
+  renderStatus();
 
   return {
     element,
@@ -237,6 +375,7 @@ export function createControls(callbacks: ControlsCallbacks): Controls {
     destroy: () => {
       pause();
       stopTimer();
+      clearQuietHint();
     },
   };
 }
