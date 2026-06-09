@@ -22,12 +22,14 @@ import {
 import {
   type WorldEvent,
   type ResourceKind,
+  type FortuneKind,
   factionFounded,
   worldColonized,
   conflict,
   resourceCrisis,
   firstContact,
   factionCollapsed,
+  worldFortune,
 } from "./events";
 
 // --- Tuning ------------------------------------------------------------------
@@ -63,6 +65,57 @@ const RESOURCE_KINDS: readonly ResourceKind[] = [
   "materials",
   "influence",
 ];
+
+// --- Phase 2: ongoing pressure (issue #19) -----------------------------------
+//
+// Phase 1 sectors raced to a dead equilibrium — everyone consolidating, no
+// events — in under 30s. Two ongoing pressures keep the sector *changing*:
+// the environment drifts (boom/bust), and peace between rivals decays into
+// recurring war. Both are deterministic (all randomness via the injected Rng).
+
+/** Boom/bust: a faction's worlds can see their fortunes turn each cycle. */
+const DRIFT = {
+  /**
+   * Per living faction per cycle, the chance one of its worlds sees its
+   * fortunes turn. Kept per-faction (not per-world) so a sprawling empire
+   * doesn't flood the chronicle — coverage stays even as territory grows.
+   */
+  chancePerFaction: 0.1,
+  /** Of those shifts, the split across discovery / depletion / disaster. */
+  weights: { discovery: 0.4, depletion: 0.35, disaster: 0.25 },
+  /** Resource-richness swing for a discovery (added) or depletion (removed). */
+  richnessSwing: { min: 0.12, max: 0.3 },
+  /** Floor a world's richness can be depleted to — never fully barren. */
+  richnessFloor: 0.05,
+  /** Hazard a disaster adds, and the fraction of garrison population it costs. */
+  disasterHazard: { min: 0.15, max: 0.3 },
+  disasterPopLoss: { min: 0.08, max: 0.18 },
+} as const;
+
+/**
+ * Standing tensions: bordering powers that have met accrue friction each cycle,
+ * scaled by how aggressive their dispositions are. Past `threshold` the
+ * aggressor strikes even when it would otherwise sit tight; a clash vents the
+ * pressure, which then rebuilds — so peace is temporary, not permanent.
+ */
+const TENSION = {
+  /** Baseline friction a bordering, acquainted pair gains per cycle. */
+  base: 1,
+  /** Extra friction per point of summed disposition aggression. */
+  perAggression: 0.6,
+  /** Friction at which the aggressor will force a war. */
+  threshold: 22,
+  /** Friction a clash between the pair vents (win or lose). */
+  release: 16,
+} as const;
+
+/** How belligerent each disposition is — drives tension growth and who strikes. */
+const AGGRESSION: Record<string, number> = {
+  militarist: 3,
+  expansionist: 2,
+  industrious: 1,
+  isolationist: 0,
+};
 
 // --- Engine state ------------------------------------------------------------
 
@@ -104,6 +157,11 @@ function strength(faction: Faction): number {
   );
 }
 
+/** Clamp a world trait to [0, 1], rounded to two decimals to stay tidy. */
+function clamp01(value: number): number {
+  return Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
+}
+
 /** Clamp every stockpile to a non-negative integer, in place. */
 function settleResources(faction: Faction): void {
   const r = faction.resources;
@@ -133,9 +191,16 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   // Per-faction record of which resources are currently in crisis, so a crisis
   // fires once on the way down rather than every tick it stays low.
   const inCrisis = new Map<string, Set<ResourceKind>>();
+  // Standing friction per acquainted, bordering pair ("fac-0|fac-1"). Decays
+  // into war past TENSION.threshold; a clash vents it.
+  const tension = new Map<string, number>();
 
   const factionIds = Object.keys(world.factions).sort(byId);
   for (const id of factionIds) inCrisis.set(id, new Set());
+
+  /** Canonical, order-independent key for a faction pair. */
+  const pairKey = (a: string, b: string): string =>
+    byId(a, b) <= 0 ? `${a}|${b}` : `${b}|${a}`;
 
   // Founding dispatches for the starting roster, derived once.
   const foundingEvents: WorldEvent[] = factionIds.map((id) => {
@@ -227,6 +292,55 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     return events;
   };
 
+  // --- Step 1b: environmental drift (boom/bust) ------------------------------
+
+  /** Pick a fortune kind from DRIFT.weights using a single rng draw. */
+  const rollFortune = (): FortuneKind => {
+    const r = rng.next();
+    const { discovery, depletion } = DRIFT.weights;
+    if (r < discovery) return "discovery";
+    if (r < discovery + depletion) return "depletion";
+    return "disaster";
+  };
+
+  /** A value in [min, max], drawn from the rng. */
+  const span = (range: { min: number; max: number }): number =>
+    range.min + rng.next() * (range.max - range.min);
+
+  /**
+   * Drift faction holdings' fortunes so the economy never settles flat.
+   * Discoveries enrich, depletion erodes, disasters wound (hazard up, garrison
+   * population down) — keeping yields, crises, and pressure in motion across a
+   * long run. One world per faction may turn per cycle, chosen via the rng.
+   */
+  const driftWorlds = (tick: number): WorldEvent[] => {
+    const events: WorldEvent[] = [];
+    for (const faction of living()) {
+      if (faction.ownedWorldIds.length === 0) continue;
+      if (!rng.bool(DRIFT.chancePerFaction)) continue;
+      const held = faction.ownedWorldIds.slice().sort(byId);
+      const w = world.worlds[held[rng.int(0, held.length - 1)]];
+      const fortune = rollFortune();
+
+      if (fortune === "discovery") {
+        w.resourceRichness = clamp01(w.resourceRichness + span(DRIFT.richnessSwing));
+      } else if (fortune === "depletion") {
+        w.resourceRichness = Math.max(
+          DRIFT.richnessFloor,
+          clamp01(w.resourceRichness - span(DRIFT.richnessSwing)),
+        );
+      } else {
+        w.hazard = clamp01(w.hazard + span(DRIFT.disasterHazard));
+        // A disaster scatters part of the holding faction's population.
+        faction.resources.population *= 1 - span(DRIFT.disasterPopLoss);
+        settleResources(faction);
+      }
+
+      events.push(worldFortune(tick, faction, w, fortune));
+    }
+    return events;
+  };
+
   // --- Step 2: first contact -------------------------------------------------
 
   /** The shared/adjacent system through which two factions meet, if any. */
@@ -269,6 +383,76 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       }
     }
     return events;
+  };
+
+  // --- Step 2b: standing tensions --------------------------------------------
+
+  /** Grow friction between acquainted powers that still share a border. */
+  const accrueTension = (): void => {
+    const alive = living();
+    for (let i = 0; i < alive.length; i++) {
+      for (let j = i + 1; j < alive.length; j++) {
+        const a = alive[i];
+        const b = alive[j];
+        const key = pairKey(a.id, b.id);
+        if (!met.has(`${a.id}|${b.id}`)) continue;
+        if (!contactSystem(a, b)) continue; // friction needs a shared frontier
+        const aggression = AGGRESSION[a.disposition] + AGGRESSION[b.disposition];
+        const gain = TENSION.base + aggression * TENSION.perAggression;
+        tension.set(key, (tension.get(key) ?? 0) + gain);
+      }
+    }
+  };
+
+  /** Vent the friction a clash between two factions releases. */
+  const ventTension = (a: string, b: string): void => {
+    const key = pairKey(a, b);
+    const current = tension.get(key);
+    if (current === undefined) return;
+    tension.set(key, Math.max(0, current - TENSION.release));
+  };
+
+  /** True when `faction` is the designated aggressor against `rival`. */
+  const isAggressor = (faction: Faction, rival: Faction): boolean => {
+    const mine = AGGRESSION[faction.disposition];
+    const theirs = AGGRESSION[rival.disposition];
+    if (mine !== theirs) return mine > theirs;
+    return byId(faction.id, rival.id) < 0; // tie-break so only one side strikes
+  };
+
+  /**
+   * The world a faction would strike to vent its hottest standing tension, if
+   * any rival is past the threshold and holds a world within reach.
+   */
+  const tensionWarTarget = (
+    faction: Faction,
+    owner: Map<string, string>,
+  ): World | null => {
+    const reach = reachableSystems(faction);
+    let bestRival: string | null = null;
+    let bestTension: number = TENSION.threshold;
+    for (const rival of living()) {
+      if (rival.id === faction.id) continue;
+      if (!isAggressor(faction, rival)) continue;
+      const t = tension.get(pairKey(faction.id, rival.id)) ?? 0;
+      if (t >= bestTension) {
+        // Ties broken by id so the choice stays deterministic.
+        if (t > bestTension || bestRival === null || byId(rival.id, bestRival) < 0) {
+          bestTension = t;
+          bestRival = rival.id;
+        }
+      }
+    }
+    if (!bestRival) return null;
+
+    const targets: World[] = [];
+    for (const sysId of [...reach].sort(byId)) {
+      for (const wid of world.systems[sysId].worldIds) {
+        if (owner.get(wid) === bestRival) targets.push(world.worlds[wid]);
+      }
+    }
+    targets.sort((x, y) => x.hazard - y.hazard || byId(x.id, y.id));
+    return targets[0] ?? null;
   };
 
   // --- Step 3: faction actions ----------------------------------------------
@@ -334,6 +518,13 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     const war = warTargets(faction, owner);
     const canColonize = colonize.length > 0 && canAfford(faction, COST.colonize);
     const canWar = war.length > 0 && canAfford(faction, COST.war);
+
+    // Boiling-over tension forces a strike even on a faction that would rather
+    // rest — peace between rivals is temporary, not a permanent equilibrium.
+    if (canAfford(faction, COST.war)) {
+      const grudge = tensionWarTarget(faction, owner);
+      if (grudge) return { kind: "WAR", target: grudge };
+    }
 
     // A faction stretched thin recovers before it overreaches further.
     const strained =
@@ -426,6 +617,7 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       }
       settleResources(faction);
       settleResources(defender);
+      ventTension(faction.id, defender.id);
       return [conflict(tick, faction, defender, target, captured)];
     }
 
@@ -458,9 +650,16 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       events.push(...updateResources(faction, t));
     }
 
+    // 1b. The environment drifts — discoveries, depletion, disasters — so the
+    //     economy keeps moving instead of settling into a silent plateau.
+    events.push(...driftWorlds(t));
+
     // 2. First contact between newly-adjacent powers (recorded before any
     //    hostilities this tick, so the meeting reads before the war).
     events.push(...detectContacts(t));
+
+    // 2b. Bordering rivals grow more restive; high tension boils into war below.
+    accrueTension();
 
     // 3. Each faction takes one action toward its goal. Ownership is tracked
     //    live so a world taken early in the tick is seen as held later in it.
