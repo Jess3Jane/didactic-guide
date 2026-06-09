@@ -11,6 +11,7 @@
   --accent-red: #f87171;
   --accent-green: #68d391;
   --accent-violet: #b794f4;
+  --accent-gold: #ecc94b;
   font-family: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
 }
 
@@ -427,6 +428,15 @@ body {
 }
 .dispatch--leadership .dispatch__kind {
   color: var(--accent-violet);
+}
+
+/* Diplomacy — the politics between powers, set apart in gold. Hostile turns
+   (threats, betrayals) are mapped to the conflict accent in the feed instead. */
+.dispatch--diplomacy {
+  border-left-color: var(--accent-gold);
+}
+.dispatch--diplomacy .dispatch__kind {
+  color: var(--accent-gold);
 }
 
 /* The terminal dispatch — a quiet, full-width epilogue that closes the run. */

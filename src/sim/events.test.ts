@@ -11,7 +11,9 @@ import {
   factionCollapsed,
   worldFortune,
   leadershipChange,
+  diplomacy,
   sectorConcluded,
+  type DiplomacyKind,
   type FortuneKind,
   type ResourceKind,
 } from "./events";
@@ -150,6 +152,28 @@ group("describe", () => {
     expect(isGrammatical(e.summary)).toBe(true);
   });
 
+  it("renders DIPLOMACY per kind, naming both parties", () => {
+    const kinds: DiplomacyKind[] = [
+      "pact",
+      "alliance",
+      "peace",
+      "trade",
+      "threat",
+      "betrayal",
+    ];
+    for (const kind of kinds) {
+      const e = diplomacy(10, kind, helion, iron, aldebaran);
+      expect(e.actors).toEqual([
+        { id: "fac-0", name: "Helion Compact" },
+        { id: "fac-1", name: "Iron Dominion" },
+      ]);
+      expect(e.data.kind).toBe(kind);
+      expect(e.summary).toContain("Helion Compact");
+      expect(e.summary).toContain("Iron Dominion");
+      expect(isGrammatical(e.summary)).toBe(true);
+    }
+  });
+
   it("renders SECTOR_CONCLUDED, naming the victor when unified", () => {
     const unified = sectorConcluded(40, "unified", helion);
     expect(unified.actors).toEqual([{ id: "fac-0", name: "Helion Compact" }]);
@@ -179,6 +203,7 @@ group("describe", () => {
         { name: "Sarn Okonro", title: "Pioneer", trait: "stoic", since: 0 },
         7,
       ),
+      diplomacy(8, "alliance", helion, iron, aldebaran),
       sectorConcluded(8, "unified", helion),
     ];
     // One sample per declared type, and each reads as a finished sentence.
