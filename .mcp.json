@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "webview": {
+      "command": "playwright-mcp",
+      "args": [
+        "--browser", "chrome",
+        "--executable-path", "/opt/claude-webview/chrome",
+        "--headless",
+        "--no-sandbox",
+        "--isolated"
+      ]
+    }
+  }
+}
