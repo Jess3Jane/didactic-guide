@@ -1,13 +1,14 @@
 import "./style.css";
 import { createRng } from "./sim/rng";
 import { generateSector } from "./sim/world";
-import { createEngine } from "./sim/engine";
+import { createEngine, type Engine } from "./sim/engine";
 import { createFeed } from "./ui/feed";
+import { createControls, randomSeed } from "./ui/controls";
 
-// Phase 1 wiring. This is the one place `sim/` and `ui/` meet (GDD §6): RNG →
-// worldgen → engine → feed. For issue #6 it runs a fixed-seed sector on a simple
-// auto-tick so the live chronicle is demonstrable end-to-end; issue #7 replaces
-// this loop with play / pause / step + speed controls and a seed input.
+// Phase 1 wiring (issue #7). This is the one place `sim/` and `ui/` meet
+// (GDD §6): RNG → worldgen → engine → feed, driven by the time + seed controls.
+// Open the page, press play, and watch a sector's history scroll by; enter a
+// seed and the same history reproduces every time.
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -19,25 +20,41 @@ if (app) {
     </header>
   `;
 
-  const seed = "starfall";
-  const rng = createRng(seed);
-  const sector = generateSector(rng, { seed });
-  const engine = createEngine(sector, rng);
-
   const feed = createFeed();
-  app.append(feed.element);
 
-  // Open the chronicle on the founding roster, then stream the history.
-  feed.reset(engine.foundingEvents);
+  // The live engine for the current seed. Rebuilt from scratch on every
+  // "Generate" so a seed always starts the same world from cycle 0.
+  let engine: Engine | null = null;
 
-  // A modest auto-tick stands in for the time controls landing in issue #7.
-  const TICK_MS = 700;
-  const MAX_CYCLES = 400;
-  const timer = window.setInterval(() => {
-    if (engine.getTick() >= MAX_CYCLES) {
-      window.clearInterval(timer);
-      return;
-    }
-    feed.push(engine.tick());
-  }, TICK_MS);
+  /** Build a fresh sector from `seed`, reset the chronicle to its founding. */
+  const generate = (seed: string): void => {
+    const rng = createRng(seed);
+    const sector = generateSector(rng, { seed });
+    engine = createEngine(sector, rng);
+    feed.reset(engine.foundingEvents);
+  };
+
+  /** True while at least one faction still holds territory worth simulating. */
+  const worldIsLive = (eng: Engine): boolean =>
+    Object.values(eng.sector.factions).some(
+      (f) => f.ownedWorldIds.length > 0,
+    );
+
+  const controls = createControls({
+    onStep: () => {
+      if (!engine) return false;
+      feed.push(engine.tick());
+      // Stop the loop once the sector has gone dark — empty ticks make dull news.
+      return worldIsLive(engine);
+    },
+    onGenerate: generate,
+  });
+
+  // Controls above the chronicle they drive.
+  app.append(controls.element, feed.element);
+
+  // Open on a fresh random sector so the page never loads empty.
+  const initialSeed = randomSeed();
+  controls.setSeed(initialSeed);
+  generate(initialSeed);
 }
