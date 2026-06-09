@@ -17,6 +17,8 @@ import {
   type Faction,
   type World,
   type StarSystem,
+  type LeaderTrait,
+  generateLeader,
   systemNeighbors,
 } from "./world";
 import {
@@ -25,6 +27,7 @@ import {
   type ResourceKind,
   type FortuneKind,
   type Campaign,
+  type LeadershipChange,
   factionFounded,
   worldColonized,
   conflict,
@@ -32,6 +35,7 @@ import {
   firstContact,
   factionCollapsed,
   worldFortune,
+  leadershipChange,
   sectorConcluded,
 } from "./events";
 
@@ -133,6 +137,38 @@ const AGGRESSION: Record<string, number> = {
   industrious: 1,
   isolationist: 0,
 };
+
+// --- Phase 2: named leaders (issue #23) --------------------------------------
+//
+// Factions are led by named figures who turn over across a run, and whose trait
+// nudges how belligerent the faction acts — so a change at the top can cool or
+// inflame a rivalry, and dispatches can attribute action to a person.
+
+/**
+ * Per-trait shift to a faction's effective aggression. `ruthless`/`ambitious`
+ * leaders lean a faction toward war, `cautious` away from it; the sum with the
+ * disposition's base is floored at 0 so friction never runs in reverse.
+ */
+const TRAIT_AGGRESSION: Record<LeaderTrait, number> = {
+  ambitious: 1,
+  ruthless: 2,
+  cautious: -1,
+  stoic: 0,
+};
+
+// Leadership is meant to be an occasional beat, not a churn — so changes hang
+// off discrete moments (a fresh crisis, a conquest) rather than a standing state,
+// and natural succession is a small per-cycle chance gated by a minimum tenure.
+const LEADERSHIP = {
+  /** Cycles a leader must serve before natural succession or a coup is possible. */
+  minTenure: 6,
+  /** Per cycle past `minTenure`, the chance an incumbent dies or steps down. */
+  successionChance: 0.006,
+  /** When a *fresh* crisis strikes past `minTenure`, the chance it topples the leader. */
+  coupChance: 0.35,
+  /** The chance a fresh conqueror's victorious commander seizes power. */
+  ascensionChance: 0.25,
+} as const;
 
 // --- Engine state ------------------------------------------------------------
 
@@ -442,6 +478,14 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
 
   // --- Step 2b: standing tensions --------------------------------------------
 
+  /**
+   * A faction's effective aggression: its disposition's base, shifted by the
+   * trait of whoever currently leads it (issue #23), floored at 0 so a placid
+   * leader cools a rivalry without ever reversing the friction.
+   */
+  const aggressionOf = (faction: Faction): number =>
+    Math.max(0, AGGRESSION[faction.disposition] + TRAIT_AGGRESSION[faction.leader.trait]);
+
   /** Grow friction between acquainted powers that still share a border. */
   const accrueTension = (): void => {
     const alive = living();
@@ -452,7 +496,7 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         const key = pairKey(a.id, b.id);
         if (!met.has(`${a.id}|${b.id}`)) continue;
         if (!contactSystem(a, b)) continue; // friction needs a shared frontier
-        const aggression = AGGRESSION[a.disposition] + AGGRESSION[b.disposition];
+        const aggression = aggressionOf(a) + aggressionOf(b);
         const gain = TENSION.base + aggression * TENSION.perAggression;
         tension.set(key, (tension.get(key) ?? 0) + gain);
       }
@@ -486,8 +530,8 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
 
   /** True when `faction` is the designated aggressor against `rival`. */
   const isAggressor = (faction: Faction, rival: Faction): boolean => {
-    const mine = AGGRESSION[faction.disposition];
-    const theirs = AGGRESSION[rival.disposition];
+    const mine = aggressionOf(faction);
+    const theirs = aggressionOf(rival);
     if (mine !== theirs) return mine > theirs;
     return byId(faction.id, rival.id) < 0; // tie-break so only one side strikes
   };
@@ -716,6 +760,61 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     return events;
   };
 
+  // --- Step 4b: leadership turnover (issue #23) ------------------------------
+
+  /**
+   * Turn over leadership where the moment calls for it. A fresh conqueror's
+   * victorious commander may seize power (`ascension`); a leader struck by a
+   * fresh crisis past a minimum tenure may be deposed (`coup`); and any seasoned
+   * leader may simply pass on (`succession`). Each installs a procedurally-named
+   * successor and emits a legible transition. The two upheavals hang off discrete
+   * moments this tick — a conquest, a new crisis — rather than a standing state,
+   * so leadership reads as an occasional beat, not a churn. Triggers are checked
+   * in priority order and draw from the rng only when their preconditions hold,
+   * keeping the change deterministic.
+   */
+  const updateLeadership = (
+    tick: number,
+    conquerors: Set<string>,
+    freshCrises: Set<string>,
+  ): WorldEvent[] => {
+    const events: WorldEvent[] = [];
+    for (const faction of living()) {
+      if (faction.ownedWorldIds.length === 0) continue;
+      const leader = faction.leader;
+      const tenure = tick - leader.since;
+      const seasoned = tenure >= LEADERSHIP.minTenure;
+
+      let reason: LeadershipChange | null = null;
+      if (conquerors.has(faction.id) && rng.bool(LEADERSHIP.ascensionChance)) {
+        reason = "ascension";
+      } else if (
+        seasoned &&
+        freshCrises.has(faction.id) &&
+        rng.bool(LEADERSHIP.coupChance)
+      ) {
+        reason = "coup";
+      } else if (seasoned && rng.bool(LEADERSHIP.successionChance)) {
+        reason = "succession";
+      }
+      if (!reason) continue;
+
+      const predecessor = leader;
+      faction.leader = generateLeader(rng, faction.disposition, tick);
+      events.push(
+        leadershipChange(
+          tick,
+          faction,
+          reason,
+          predecessor,
+          tenure,
+          world.systems[faction.homeSystemId],
+        ),
+      );
+    }
+    return events;
+  };
+
   // --- Step 5: conclusion ----------------------------------------------------
 
   /**
@@ -785,6 +884,18 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
 
     // 4. Collapse anyone who was conquered down to nothing.
     events.push(...detectCollapses(t));
+
+    // 4b. Leadership may turn over: a victorious commander rises, a fresh crisis
+    //     topples a leader, or a long reign ends. Both upheavals key off this
+    //     tick's own dispatches — conquerors are the attackers who took a world,
+    //     fresh crises the factions that just dropped into the red.
+    const conquerors = new Set<string>();
+    const freshCrises = new Set<string>();
+    for (const e of events) {
+      if (e.type === "CONFLICT" && e.data.captured) conquerors.add(e.actors[0].id);
+      else if (e.type === "RESOURCE_CRISIS") freshCrises.add(e.actors[0].id);
+    }
+    events.push(...updateLeadership(t, conquerors, freshCrises));
 
     // 5. If the field has narrowed to one power (or none), the history ends.
     events.push(...assessConclusion(t));

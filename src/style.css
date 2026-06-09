@@ -10,6 +10,7 @@
   --accent-warm: #f6ad55;
   --accent-red: #f87171;
   --accent-green: #68d391;
+  --accent-violet: #b794f4;
   font-family: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
 }
 
@@ -418,6 +419,14 @@ body {
 }
 .dispatch--collapse .dispatch__kind {
   color: var(--accent-red);
+}
+
+/* Leadership turnover — a person-centred beat, set apart in violet. */
+.dispatch--leadership {
+  border-left-color: var(--accent-violet);
+}
+.dispatch--leadership .dispatch__kind {
+  color: var(--accent-violet);
 }
 
 /* The terminal dispatch — a quiet, full-width epilogue that closes the run. */

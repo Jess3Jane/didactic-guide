@@ -20,6 +20,7 @@
 import type {
   Disposition,
   Faction,
+  Leader,
   Resources,
   StarSystem,
   World,
@@ -39,6 +40,7 @@ export type WorldEventType =
   | "FIRST_CONTACT"
   | "FACTION_COLLAPSED"
   | "WORLD_FORTUNE"
+  | "LEADERSHIP_CHANGE"
   | "SECTOR_CONCLUDED";
 
 /** Which stockpile a crisis concerns. Mirrors the keys of `Resources`. */
@@ -57,6 +59,25 @@ export type SectorOutcome = "unified" | "dark";
  * sector's economy from settling into a dead, silent equilibrium.
  */
 export type FortuneKind = "discovery" | "depletion" | "disaster";
+
+/**
+ * How a leadership turned over (issue #23). `succession` — the incumbent died or
+ * stepped down after a long tenure; `coup` — they were cast down amid crisis;
+ * `ascension` — a commander rose on the back of a conquest. Each reads as a
+ * distinct, legible transition in the chronicle.
+ */
+export type LeadershipChange = "succession" | "coup" | "ascension";
+
+/**
+ * A prose-ready snapshot of a leader (issue #23). Like `EntityRef`, the name and
+ * title are denormalized onto the event so a dispatch can attribute action to a
+ * person without re-consulting the faction — and stays legible even after that
+ * leader has been succeeded.
+ */
+export interface LeaderRef {
+  name: string;
+  title: string;
+}
 
 /**
  * A prose-ready reference to a named entity (faction, world, or system).
@@ -83,15 +104,16 @@ interface EventBase {
   summary: string;
 }
 
-/** A faction enters the historical record. */
+/** A faction enters the historical record, under its founding leader. */
 export interface FactionFoundedEvent extends EventBase {
   type: "FACTION_FOUNDED";
-  data: { disposition: Disposition };
+  data: { disposition: Disposition; leader: LeaderRef };
 }
 
-/** A faction expands onto a previously unheld world. */
+/** A faction expands onto a previously unheld world, at its leader's command. */
 export interface WorldColonizedEvent extends EventBase {
   type: "WORLD_COLONIZED";
+  data: { leader: LeaderRef };
 }
 
 /**
@@ -115,7 +137,7 @@ export interface Campaign {
  */
 export interface ConflictEvent extends EventBase {
   type: "CONFLICT";
-  data: { captured: boolean; campaign?: Campaign };
+  data: { captured: boolean; campaign?: Campaign; leader: LeaderRef };
 }
 
 /**
@@ -150,6 +172,21 @@ export interface WorldFortuneEvent extends EventBase {
 }
 
 /**
+ * A faction's leadership turns over (issue #23). `actors[0]` is the faction, now
+ * led by `successor`; `predecessor` is who they replaced, and `tenure` the
+ * cycles that leader served — so a long reign ending reads with due weight.
+ */
+export interface LeadershipChangeEvent extends EventBase {
+  type: "LEADERSHIP_CHANGE";
+  data: {
+    reason: LeadershipChange;
+    predecessor: LeaderRef;
+    successor: LeaderRef;
+    tenure: number;
+  };
+}
+
+/**
  * The history reaches its end (issue #22). For a `unified` outcome the lone
  * surviving faction is `actors[0]`; a `dark` outcome names no one.
  */
@@ -167,6 +204,7 @@ export type WorldEvent =
   | FirstContactEvent
   | FactionCollapsedEvent
   | WorldFortuneEvent
+  | LeadershipChangeEvent
   | SectorConcludedEvent;
 
 /** Every event type, handy for iteration (tests, future filtering). */
@@ -178,6 +216,7 @@ export const EVENT_TYPES: readonly WorldEventType[] = [
   "FIRST_CONTACT",
   "FACTION_COLLAPSED",
   "WORLD_FORTUNE",
+  "LEADERSHIP_CHANGE",
   "SECTOR_CONCLUDED",
 ] as const;
 
@@ -289,6 +328,11 @@ function ordinal(n: number): string {
   return ORDINALS[n] ?? `${n}th`;
 }
 
+/** A leader's full styling for prose, e.g. "Admiral Veyra Tolan" (issue #23). */
+function styled(leader: LeaderRef): string {
+  return `${leader.title} ${leader.name}`;
+}
+
 /**
  * Render an event into a single, grammatical dispatch.
  *
@@ -300,23 +344,27 @@ export function describe(event: WorldEvent): string {
   switch (event.type) {
     case "FACTION_FOUNDED": {
       const f = event.actors[0].name;
+      const lead = styled(event.data.leader);
       const where = event.location
         ? ` in the ${event.location.name} system`
         : "";
       return pickVariant(event, [
-        () => `The ${f} rose to power${where}.`,
-        () => `A new power, the ${f}, emerged${where}.`,
-        () => `The banners of the ${f} were first raised${where}.`,
+        () => `Under ${lead}, the ${f} rose to power${where}.`,
+        () => `${lead} proclaimed a new power, the ${f}${where}.`,
+        () => `The banners of the ${f} were first raised under ${lead}${where}.`,
       ])();
     }
 
     case "WORLD_COLONIZED": {
       const f = event.actors[0].name;
+      const lead = styled(event.data.leader);
       const world = event.location?.name ?? "an uncharted world";
       return pickVariant(event, [
         () => `The ${f} colonized ${world}.`,
         () => `Settlers of the ${f} laid claim to ${world}.`,
         () => `${world} was brought into the fold of the ${f}.`,
+        () => `At ${lead}'s command, the ${f} settled ${world}.`,
+        () => `${lead} sent the ${f}'s pioneers to ${world}.`,
       ])();
     }
 
@@ -327,6 +375,7 @@ export function describe(event: WorldEvent): string {
       // A clash that continues a war (clash ≥ 2) carries the campaign's age,
       // so the reader can follow one conflict across many cycles.
       const campaign = event.data.campaign;
+      const lead = styled(event.data.leader);
       const tail =
         campaign && campaign.clash >= 2
           ? ` — the ${ordinal(campaign.clash)} clash of a war raging since cycle ${campaign.since}`
@@ -336,11 +385,14 @@ export function describe(event: WorldEvent): string {
             () => `The ${a} seized ${world} from the ${d}${tail}.`,
             () => `${world} fell to the ${a}, wrested from the ${d}${tail}.`,
             () => `The ${d} lost ${world} as the ${a} broke through${tail}.`,
+            () => `${lead} of the ${a} stormed ${world}, taking it from the ${d}${tail}.`,
+            () => `On ${lead}'s order, the ${a} wrenched ${world} from the ${d}${tail}.`,
           ]
         : [
             () => `The ${d} repelled the ${a}'s assault on ${world}${tail}.`,
             () => `The ${a}'s drive on ${world} foundered against the ${d}${tail}.`,
             () => `${world} held firm as the ${d} threw back the ${a}${tail}.`,
+            () => `${lead}'s assault on ${world} broke against the ${d}, sparing the ${a} nothing${tail}.`,
           ];
       return pickVariant(event, variants)();
     }
@@ -411,6 +463,33 @@ export function describe(event: WorldEvent): string {
       return pickVariant(event, byKind[event.data.fortune])();
     }
 
+    case "LEADERSHIP_CHANGE": {
+      const f = event.actors[0].name;
+      const { reason, tenure } = event.data;
+      const out = styled(event.data.predecessor);
+      const inc = styled(event.data.successor);
+      const reign =
+        tenure >= 2 ? `${tenure} cycles` : tenure === 1 ? "a single cycle" : "a brief tenure";
+      const byReason: Record<LeadershipChange, (() => string)[]> = {
+        succession: [
+          () => `${out} of the ${f} passed after ${reign} in command; ${inc} took up the mantle.`,
+          () => `After ${reign} at the helm of the ${f}, ${out} stepped down, and ${inc} succeeded.`,
+          () => `The long service of ${out} ended; ${inc} now leads the ${f}.`,
+        ],
+        coup: [
+          () => `Amid crisis, the ${f} cast down ${out}; ${inc} seized command.`,
+          () => `${out} was deposed as the ${f} convulsed, and ${inc} took power.`,
+          () => `A bloodless purge unseated ${out}; ${inc} now commands the ${f}.`,
+        ],
+        ascension: [
+          () => `Borne up by victory, ${inc} supplanted ${out} atop the ${f}.`,
+          () => `Flush from conquest, ${inc} eclipsed ${out} to lead the ${f}.`,
+          () => `The triumphant ${inc} swept ${out} aside to command the ${f}.`,
+        ],
+      };
+      return pickVariant(event, byReason[reason])();
+    }
+
     case "SECTOR_CONCLUDED": {
       if (event.data.outcome === "unified") {
         const victor = event.actors[0]?.name ?? "a lone power";
@@ -442,6 +521,11 @@ function ref(entity: { id: string; name: string }): EntityRef {
   return { id: entity.id, name: entity.name };
 }
 
+/** Denormalize a leader into a prose-ready `LeaderRef` (issue #23). */
+function leaderRef(leader: Leader): LeaderRef {
+  return { name: leader.name, title: leader.title };
+}
+
 /**
  * Stamp an event with its `summary` by running `describe`.
  *
@@ -465,7 +549,7 @@ export function factionFounded(
     tick,
     actors: [ref(faction)],
     location: homeSystem ? ref(homeSystem) : undefined,
-    data: { disposition: faction.disposition },
+    data: { disposition: faction.disposition, leader: leaderRef(faction.leader) },
   });
 }
 
@@ -480,6 +564,7 @@ export function worldColonized(
     tick,
     actors: [ref(faction)],
     location: ref(world),
+    data: { leader: leaderRef(faction.leader) },
   });
 }
 
@@ -495,12 +580,13 @@ export function conflict(
   captured: boolean,
   campaign?: Campaign,
 ): ConflictEvent {
+  const leader = leaderRef(attacker.leader);
   return withSummary<ConflictEvent>({
     type: "CONFLICT",
     tick,
     actors: [ref(attacker), ref(defender)],
     location: ref(world),
-    data: campaign ? { captured, campaign } : { captured },
+    data: campaign ? { captured, campaign, leader } : { captured, leader },
   });
 }
 
@@ -569,6 +655,33 @@ export function worldFortune(
     actors: faction ? [ref(faction)] : [],
     location: ref(world),
     data: { fortune },
+  });
+}
+
+/**
+ * A faction's leadership turns over (issue #23). `faction.leader` is the new
+ * incumbent (install the successor before calling); `predecessor` is the leader
+ * they replaced, and `tenure` the cycles that predecessor served.
+ */
+export function leadershipChange(
+  tick: number,
+  faction: Faction,
+  reason: LeadershipChange,
+  predecessor: Leader,
+  tenure: number,
+  homeSystem?: StarSystem,
+): LeadershipChangeEvent {
+  return withSummary<LeadershipChangeEvent>({
+    type: "LEADERSHIP_CHANGE",
+    tick,
+    actors: [ref(faction)],
+    location: homeSystem ? ref(homeSystem) : undefined,
+    data: {
+      reason,
+      predecessor: leaderRef(predecessor),
+      successor: leaderRef(faction.leader),
+      tenure,
+    },
   });
 }
 

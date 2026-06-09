@@ -91,8 +91,11 @@ describe("recurring crises", () => {
 
 describe("rise-and-fall", () => {
   it("remembers a collapsed faction's peak territory", () => {
+    // A grown power rising then falling to nothing is an uncommon shape, so this
+    // sweeps a wide spread of seeds for the existence proof rather than relying
+    // on any single run to exhibit it.
     let sawGrownFall = false;
-    for (let i = 0; i < 40 && !sawGrownFall; i++) {
+    for (let i = 0; i < 60 && !sawGrownFall; i++) {
       for (const e of run(engineFromSeed(`dynasty-${i}`), 300)) {
         if (e.type === "FACTION_COLLAPSED" && e.data.peakWorlds >= 2) {
           // A faction that fell held more worlds at its height than at its end (0).
