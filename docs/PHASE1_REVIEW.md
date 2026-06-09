@@ -24,20 +24,32 @@ weight them double when totalling.
 
 ## 1. Scorecard
 
-| # | Dimension | Probe questions | Score (1–5) | Strawman |
-|---|-----------|-----------------|:-----------:|:--------:|
-| A | **Emergence** (core pillar) | Do stories feel like systems *colliding*, not random rolls? Can you point to a causal chain (overexpansion → crisis → invasion → collapse)? Do different seeds tell genuinely different stories? | | 3 |
-| B | **Readable history** (core pillar) | Does each dispatch read as clean prose? Could a stranger follow the sector's story top to bottom without explanation? Any robotic/repetitive phrasing? | | 4 |
-| C | **Deterministic & shareable** (core pillar) | Same seed → identical history every time? Is a seed easy to copy/share? (Note: no URL-sharing yet — Phase 3.) | | 4 |
-| D | Pacing & longevity | Does a history *sustain*? How many events before it goes quiet? Does "press play and watch" stay rewarding for more than ~30s? | | 2 |
-| E | First-run experience | Page loads non-empty? Obvious what to do? Could you enjoy it without reading docs? | | 4 |
-| F | Controls & feedback | Play/pause/step/speed/seed all behave as expected? Does the UI tell you what state the sim is in (running? ended? what cycle?)? | | 2 |
-| G | Variety of event types | How many of the 6 types do you actually see in a run? Any that never fire? Any that dominate? | | 3 |
-| H | Visual design & polish | Does it look like "dispatches from an alternate future"? Color accents legible? Typography/spacing pleasant? Mobile-readable? | | 4 |
-| I | Stability & performance | Console clean? Long runs stay responsive? Any frozen/stuck states? | | 4 |
-| J | Vision alignment | Does it deliver the GDD §1 promise — "seed a sector, press play, watch an emergent history unfold"? | | 3 |
+Scores below are the **owner's actual verdict** (Jess3Jane), with the strawman
+kept alongside for contrast. Where they diverge, the owner's read governs.
 
-**Strawman total: 33 / 50** (unweighted) · **44 / 65** (pillars A,B,C ×2)
+| # | Dimension | Score | Owner's note | Strawman |
+|---|-----------|:-----:|--------------|:--------:|
+| A | **Emergence** (core pillar) | **2** | "largely feels like events separate from one another, especially with every run ending largely the same" | 3 |
+| B | **Readable history** (core pillar) | **3** | "clean and readable but plastic, less like news more like a log file" | 4 |
+| C | **Deterministic & shareable** (core pillar) | **4** | reproduces "always" | 4 |
+| D | Pacing & longevity | **1** | "it always ends in under 30 seconds" | 2 |
+| E | First-run experience | **3** | "it's fine!" / cold open "feels clear and readable and interesting" | 4 |
+| F | Controls & feedback | **2** | sim state "impossible to tell"; with no dispatch, "step does nothing" | 2 |
+| G | Variety of event types | **3** | — | 3 |
+| H | Visual design & polish | **4** | mobile "totally fine" | 4 |
+| I | Stability & performance | **4** | "clean console, long runs don't exist" | 4 |
+| J | Vision alignment | **2** | "less like a history more like a set of events" | 3 |
+
+**Owner total: 28 / 50** (unweighted) · **37 / 65** (pillars A,B,C ×2)
+&nbsp;&nbsp;·&nbsp;&nbsp; *(strawman was 33 / 50 · 44 / 65 — i.e. the owner is meaningfully harsher.)*
+
+### The verdict in one breath
+
+It's pretty, stable, and deterministic — but **every sector fizzles identically in
+under 30 seconds, the events never connect into a story, and the prose reads like
+a log file rather than the news.** Three pillars (Emergence, Pacing, Vision) all
+fail for the same root reason: there is no sustaining, legible *history* — just a
+short, samey burst of disconnected events. That is the bar Phase 2 has to clear.
 
 ## 2. Hands-on test protocol (~5 min)
 
@@ -91,16 +103,36 @@ From one playthrough (seed `kekamif`) plus a read of the simulation core.
 - No sector map, no feed filtering (Phase 2).
 - No URL seed-sharing, no named leaders/characters (Phase 3).
 
-## 4. Suggested Phase 2 priorities (implied by the above)
+## 4. Phase 2 priorities (from the owner's verdict)
 
-These fall out of the findings, ranked by how much they'd move the core
-experience — offered as input to the Phase 2 issue backlog, not a commitment.
+Phase 2's mandate, in one line: **turn "a set of events" into a living history
+that sustains.** Priorities are ordered by how directly they answer the failing
+scores (D=1, A=2, J=2, F=2). These seed the Phase 2 issue backlog.
 
-1. **Keep histories alive.** Make equilibrium productive: ambient events
-   (trade, diplomacy, internal politics, world events) so a settled sector still
-   generates news, and/or detect true stasis and surface it.
-2. **Surface simulation state.** A visible cycle counter and an explicit
-   "the sector has gone quiet / fallen dark" state so the page never looks frozen.
-3. **Richer faction goals & diplomacy** (already on the Phase 2 roadmap) — more
-   collision points means more emergence, which is the headline pillar.
-4. **Sector map view** and **feed filtering** (Phase 2 roadmap).
+### Tier 1 — make it a history that lasts (the failing pillars)
+
+1. **Sustain the simulation — kill the sub-30s fizzle (D=1).** Rebalance the
+   economy and add ongoing pressures so a sector keeps *changing* for minutes, not
+   seconds, and never settles into a dead, silent equilibrium while still "playing."
+2. **Narrative continuity — weave events into arcs (A=2, J=2).** Give events
+   memory and causal callbacks so the feed reads as one connected story (a named
+   war that spans cycles, "the third famine in a decade," a faction's rise-and-fall
+   thread) instead of disconnected log lines.
+3. **Richer prose — dispatches, not a log file (B=3).** Multiple phrasings per
+   event, in-world framing (datelines, sources, headlines), and tone, so the same
+   event type never reads the same way twice.
+4. **Surface simulation state (F=2).** A visible cycle counter and an explicit
+   running / paused / *ended (sector gone dark)* status, and Step feedback even on
+   an empty cycle — so "is it still alive?" is never "impossible to tell."
+
+### Tier 2 — more collisions, more story (raise emergence)
+
+5. **Named leaders & characters** (promoted from Phase 3). People are the cheapest
+   route to both narrative cohesion and a "news" voice.
+6. **Richer faction goals, diplomacy & war** (GDD Phase 2). Alliances, rivalries,
+   betrayals, multi-front wars — more systems colliding means more emergence.
+
+### Tier 3 — roadmapped depth (GDD Phase 2)
+
+7. **Sector map view** — spatial context for the chronicle.
+8. **Feed filtering** — by faction and event type.
