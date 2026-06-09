@@ -9,6 +9,7 @@ import {
   firstContact,
   factionCollapsed,
   worldFortune,
+  leadershipChange,
   sectorConcluded,
   type WorldEvent,
 } from "../sim/events";
@@ -25,6 +26,7 @@ const helion: Faction = {
   ownedWorldIds: ["sys-0-w0"],
   resources: { population: 100, energy: 60, materials: 60, influence: 20 },
   disposition: "expansionist",
+  leader: { name: "Veyra Tolan", title: "Prefect", trait: "ambitious", since: 0 },
 };
 
 const iron: Faction = {
@@ -34,6 +36,7 @@ const iron: Faction = {
   ownedWorldIds: ["sys-1-w0"],
   resources: { population: 90, energy: 50, materials: 70, influence: 15 },
   disposition: "militarist",
+  leader: { name: "Castor Vane", title: "Admiral", trait: "ruthless", since: 0 },
 };
 
 const vex: World = {
@@ -79,6 +82,15 @@ group("toDispatch", () => {
     );
     expect(toDispatch(firstContact(4, helion, iron)).category).toBe("contact");
     expect(toDispatch(factionCollapsed(5, iron)).category).toBe("collapse");
+    const handover = leadershipChange(
+      6,
+      helion,
+      "succession",
+      { name: "Old Hand", title: "Prefect", trait: "stoic", since: 0 },
+      6,
+    );
+    expect(toDispatch(handover).category).toBe("leadership");
+    expect(toDispatch(handover).kind).toBe("Leadership");
     expect(toDispatch(firstContact(4, helion, iron)).kind).toBe(
       "First Contact",
     );

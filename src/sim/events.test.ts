@@ -10,6 +10,7 @@ import {
   firstContact,
   factionCollapsed,
   worldFortune,
+  leadershipChange,
   sectorConcluded,
   type FortuneKind,
   type ResourceKind,
@@ -26,6 +27,7 @@ const helion: Faction = {
   ownedWorldIds: ["sys-0-w0"],
   resources: { population: 100, energy: 60, materials: 60, influence: 20 },
   disposition: "expansionist",
+  leader: { name: "Veyra Tolan", title: "Prefect", trait: "ambitious", since: 0 },
 };
 
 const iron: Faction = {
@@ -35,6 +37,7 @@ const iron: Faction = {
   ownedWorldIds: ["sys-1-w0"],
   resources: { population: 90, energy: 50, materials: 70, influence: 15 },
   disposition: "militarist",
+  leader: { name: "Castor Vane", title: "Admiral", trait: "ruthless", since: 0 },
 };
 
 const vex: World = {
@@ -169,7 +172,14 @@ group("describe", () => {
       firstContact(4, helion, iron, aldebaran),
       factionCollapsed(5, iron),
       worldFortune(6, helion, vex, "discovery"),
-      sectorConcluded(7, "unified", helion),
+      leadershipChange(
+        7,
+        helion,
+        "succession",
+        { name: "Sarn Okonro", title: "Pioneer", trait: "stoic", since: 0 },
+        7,
+      ),
+      sectorConcluded(8, "unified", helion),
     ];
     // One sample per declared type, and each reads as a finished sentence.
     expect(new Set(samples.map((s) => s.type))).toEqual(new Set(EVENT_TYPES));
@@ -275,6 +285,57 @@ group("narrative continuity (issue #20)", () => {
     expect(fall.summary).toContain("Iron Dominion");
     // A faction that never expanded past its homeworld gets the plain epitaph.
     expect(factionCollapsed(40, iron, 1).summary).not.toContain("worlds");
+  });
+});
+
+group("named leaders (issue #23)", () => {
+  it("names the founding leader in a FACTION_FOUNDED dispatch", () => {
+    const e = factionFounded(0, helion, aldebaran);
+    expect(e.summary).toContain("Prefect Veyra Tolan");
+    expect(e.summary).toContain("Helion Compact");
+    expect(isGrammatical(e.summary)).toBe(true);
+  });
+
+  it("attributes some colonization and conflict dispatches to a leader", () => {
+    // Sweep cycles so the hash visits the leader-flavoured phrasings too.
+    const colonized = new Set(
+      Array.from({ length: 30 }, (_, t) => worldColonized(t, helion, vex).summary),
+    );
+    expect([...colonized].some((s) => s.includes("Veyra Tolan"))).toBe(true);
+
+    const clashes = new Set(
+      Array.from({ length: 30 }, (_, t) => conflict(t, iron, helion, vex, true).summary),
+    );
+    expect([...clashes].some((s) => s.includes("Admiral Castor Vane"))).toBe(true);
+    // Every clash still names attacker, defender, and the contested world.
+    for (const s of clashes) {
+      expect(s).toContain("Iron Dominion");
+      expect(s).toContain("Helion Compact");
+      expect(s).toContain("Vex-9");
+    }
+  });
+
+  it("renders each LEADERSHIP_CHANGE reason, naming both leaders", () => {
+    const reasons = ["succession", "coup", "ascension"] as const;
+    const out = {
+      name: "Castor Vane",
+      title: "Admiral",
+      trait: "ruthless" as const,
+      since: 2,
+    };
+    for (const reason of reasons) {
+      // The successor is read off the faction, so swap iron's leader in.
+      const successor = {
+        ...iron,
+        leader: { name: "Mira Drake", title: "Warlord", trait: "ambitious" as const, since: 14 },
+      };
+      const e = leadershipChange(14, successor, reason, out, 12);
+      expect(e.data.reason).toBe(reason);
+      expect(e.summary).toContain("Castor Vane"); // predecessor
+      expect(e.summary).toContain("Mira Drake"); // successor
+      expect(e.summary).toContain("Iron Dominion"); // faction
+      expect(isGrammatical(e.summary)).toBe(true);
+    }
   });
 });
 

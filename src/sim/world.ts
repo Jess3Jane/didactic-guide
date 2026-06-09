@@ -64,6 +64,33 @@ export type Disposition =
   | "industrious"
   | "isolationist";
 
+// --- Leaders -----------------------------------------------------------------
+
+/**
+ * A leader's defining trait (issue #23). Each leans the faction a little —
+ * `ambitious` and `ruthless` toward aggression, `cautious` away from it, `stoic`
+ * not at all — so a change at the top can visibly cool or inflame a rivalry. The
+ * engine owns the exact magnitudes; here the set is just the shared vocabulary.
+ */
+export type LeaderTrait = "ambitious" | "ruthless" | "cautious" | "stoic";
+
+/**
+ * The named head of a faction (issue #23). Leaders anchor the chronicle to
+ * people — dispatches can attribute action to "Admiral Veyra Tolan" — and turn
+ * over across a run (succession, coup, ascension), so this is a snapshot of who
+ * holds office right now, not a full biography.
+ */
+export interface Leader {
+  /** Full personal name, e.g. "Veyra Tolan". */
+  name: string;
+  /** Honorific drawn to suit the faction's disposition, e.g. "Admiral". */
+  title: string;
+  /** A behavioural lean that nudges how belligerent the faction acts. */
+  trait: LeaderTrait;
+  /** The cycle this leader took office (0 for a founding leader). */
+  since: number;
+}
+
 /** An agent of history: holds territory, accrues resources, pursues a goal. */
 export interface Faction {
   id: string;
@@ -73,6 +100,8 @@ export interface Faction {
   ownedWorldIds: string[];
   resources: Resources;
   disposition: Disposition;
+  /** The figure currently in command, named in dispatches (issue #23). */
+  leader: Leader;
 }
 
 // --- Sector ------------------------------------------------------------------
@@ -170,6 +199,91 @@ const DISPOSITIONS: readonly Disposition[] = [
   "isolationist",
 ];
 
+// --- Leader name pools (issue #23) -------------------------------------------
+//
+// Procedural leader names: a given name + surname drawn from these pools, with a
+// title suited to the faction's disposition. The pools are large enough that
+// collisions across a single run's small cast are rare, and — like everything
+// in `sim/` — every draw flows through the injected Rng so a seed reproduces the
+// same cast.
+
+const LEADER_GIVEN_NAMES = [
+  "Veyra",
+  "Soren",
+  "Tamsin",
+  "Cassia",
+  "Dax",
+  "Lio",
+  "Cael",
+  "Renn",
+  "Sabel",
+  "Halix",
+  "Yara",
+  "Nox",
+  "Vash",
+  "Eron",
+  "Pell",
+  "Quill",
+  "Sarn",
+  "Theda",
+  "Ulric",
+  "Wren",
+  "Orla",
+  "Brannic",
+  "Calla",
+  "Idris",
+  "Mira",
+  "Toren",
+  "Zephyr",
+  "Anselm",
+] as const;
+
+const LEADER_SURNAMES = [
+  "Tolan",
+  "Vex",
+  "Marrow",
+  "Okonro",
+  "Sallow",
+  "Drake",
+  "Voss",
+  "Kell",
+  "Asher",
+  "Renko",
+  "Sable",
+  "Thorne",
+  "Calder",
+  "Bishop",
+  "Halloran",
+  "Strand",
+  "Veldt",
+  "Oort",
+  "Rastan",
+  "Quint",
+  "Ferro",
+  "Lund",
+  "Mireles",
+  "Caspar",
+  "Doran",
+  "Nyx",
+  "Praxis",
+  "Wode",
+] as const;
+
+/** Titles flavoured by disposition, so a warlord and a chancellor read apart. */
+const LEADER_TITLES: Record<Disposition, readonly string[]> = {
+  militarist: ["Warlord", "Admiral", "Marshal", "General"],
+  expansionist: ["Prefect", "Pioneer", "Envoy", "Pathfinder"],
+  industrious: ["Director", "Chancellor", "Overseer", "Architect"],
+  isolationist: ["Warden", "Elder", "Custodian", "Steward"],
+};
+
+const LEADER_TRAITS: readonly LeaderTrait[] = [
+  "ambitious",
+  "ruthless",
+  "cautious",
+  "stoic",
+];
+
 const ROMAN = [
   "I",
   "II",
@@ -214,6 +328,25 @@ function uniqueNamer(rng: Rng, pool: readonly string[]): () => string {
     i++;
     return `${base} ${ROMAN[n] ?? n + 1}`;
   };
+}
+
+/**
+ * Draw a fresh leader for a faction of `disposition`, taking office on `since`.
+ *
+ * Used both to seat founding leaders and, in the engine, to install successors
+ * when leadership turns over (issue #23). Deterministic: all four draws (given
+ * name, surname, title, trait) flow through `rng`.
+ */
+export function generateLeader(
+  rng: Rng,
+  disposition: Disposition,
+  since: number,
+): Leader {
+  const given = rng.pick(LEADER_GIVEN_NAMES);
+  const surname = rng.pick(LEADER_SURNAMES);
+  const title = rng.pick(LEADER_TITLES[disposition]);
+  const trait = rng.pick(LEADER_TRAITS);
+  return { name: `${given} ${surname}`, title, trait, since };
 }
 
 // --- Generation --------------------------------------------------------------
@@ -343,8 +476,17 @@ export function generateSector(rng: Rng, options: GenerateOptions = {}): Sector 
         influence: rng.int(10, 30),
       },
       disposition: rng.pick(DISPOSITIONS),
+      // Founding leaders are installed in the pass below, so adding them never
+      // shifts the generation draws above — older seeds reproduce unchanged.
+      leader: { name: "", title: "", trait: "stoic", since: 0 },
     };
   });
+
+  // 4. Seat a founding leader on each faction now that every disposition exists.
+  for (let f = 0; f < homeSystems.length; f++) {
+    const faction = factions[`fac-${f}`];
+    faction.leader = generateLeader(rng, faction.disposition, 0);
+  }
 
   return { seed, systems, worlds, factions, lanes };
 }
