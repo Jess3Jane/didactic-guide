@@ -182,29 +182,91 @@ export const EVENT_TYPES: readonly WorldEventType[] = [
 ] as const;
 
 // --- Prose templating --------------------------------------------------------
+//
+// Variety, deterministically (issue #21). The Phase 1 chronicle had exactly one
+// template per event type, so a sustained run read like a log file — every
+// famine, every colonisation phrased identically. Here each event type carries
+// *several* phrasings and `describe` selects one. To keep the sim's "a seed
+// reproduces the world" guarantee, selection is a pure function of the event's
+// own structured fields (`pickVariant`) rather than a threaded RNG — so the same
+// event always renders the same way, while distinct occurrences spread across
+// the phrasing set.
+
+/**
+ * Deterministically choose one of `variants` for `event`.
+ *
+ * The index is an FNV-1a hash of a key built from the event's stable fields
+ * (type, cycle, actor/location ids, and per-type `data`), reduced mod the
+ * variant count. Two events that differ in any of those — e.g. the same famine
+ * a dozen cycles apart, or for a different faction — land on (usually) different
+ * phrasings, so repetition reads as variation rather than a stuck record. It
+ * stays pure: no `Math.random`, no RNG state, identical output for equal events.
+ */
+function pickVariant<T>(event: WorldEvent, variants: readonly T[]): T {
+  if (variants.length <= 1) return variants[0];
+  const actors = event.actors.map((a) => a.id).join(",");
+  const loc = event.location?.id ?? "";
+  const data = "data" in event ? JSON.stringify(event.data) : "";
+  const key = `${event.type}|${event.tick}|${actors}|${loc}|${data}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    h = Math.imul(h ^ key.charCodeAt(i), 0x01000193);
+  }
+  return variants[(h >>> 0) % variants.length];
+}
 
 /**
  * Per-resource phrasings for a crisis, keyed by stockpile so each reads
- * naturally rather than "suffered a population crisis". `f` is the (already
- * lower-cased, article-less) faction name.
+ * naturally rather than "suffered a population crisis". Each stockpile carries
+ * several variants (issue #21); `f` is the (already lower-cased, article-less)
+ * faction name. The first entry preserves the Phase 1 wording.
  */
-const CRISIS_PROSE: Record<ResourceKind, (f: string) => string> = {
-  population: (f) => `Famine gripped the ${f} as its colonies starved.`,
-  energy: (f) => `The ${f} plunged into an energy crisis as its reactors ran dry.`,
-  materials: (f) => `The ${f} ran short of the raw materials its industry demanded.`,
-  influence: (f) => `The authority of the ${f} crumbled into political crisis.`,
+const CRISIS_PROSE: Record<ResourceKind, ((f: string) => string)[]> = {
+  population: [
+    (f) => `Famine gripped the ${f} as its colonies starved.`,
+    (f) => `Mass starvation swept the worlds of the ${f}.`,
+    (f) => `The ${f} reeled as its colonies could no longer feed themselves.`,
+  ],
+  energy: [
+    (f) => `The ${f} plunged into an energy crisis as its reactors ran dry.`,
+    (f) => `Power failed across the ${f} as its reactors guttered out.`,
+    (f) => `The ${f} went dark, its energy reserves all but spent.`,
+  ],
+  materials: [
+    (f) => `The ${f} ran short of the raw materials its industry demanded.`,
+    (f) => `The foundries of the ${f} fell idle for want of materials.`,
+    (f) => `Shortages of raw materials choked the industry of the ${f}.`,
+  ],
+  influence: [
+    (f) => `The authority of the ${f} crumbled into political crisis.`,
+    (f) => `Political crisis shook the ${f} as its grip on power slipped.`,
+    (f) => `The ${f} fractured, its institutions buckling under unrest.`,
+  ],
 };
 
 /**
  * Phrasings for a *recurring* crisis (issue #20), which name the count so the
  * feed accrues a pattern — "the third famine" — rather than reporting each as if
- * it were the first. `nth` is the spelled-out ordinal (e.g. "third").
+ * it were the first. Several variants per stockpile (issue #21); `nth` is the
+ * spelled-out ordinal (e.g. "third").
  */
-const CRISIS_RECUR: Record<ResourceKind, (f: string, nth: string) => string> = {
-  population: (f, nth) => `Famine returned to the ${f} — the ${nth} to scour its colonies.`,
-  energy: (f, nth) => `The ${f}'s reactors failed again, its ${nth} energy crisis.`,
-  materials: (f, nth) => `For the ${nth} time, the foundries of the ${f} ran short of materials.`,
-  influence: (f, nth) => `Political crisis gripped the ${f} anew — the ${nth} to shake its authority.`,
+const CRISIS_RECUR: Record<ResourceKind, ((f: string, nth: string) => string)[]> = {
+  population: [
+    (f, nth) => `Famine returned to the ${f} — the ${nth} to scour its colonies.`,
+    (f, nth) => `Once more the colonies of the ${f} starved, its ${nth} such famine.`,
+  ],
+  energy: [
+    (f, nth) => `The ${f}'s reactors failed again, its ${nth} energy crisis.`,
+    (f, nth) => `Darkness fell over the ${f} anew — the ${nth} energy crisis to grip it.`,
+  ],
+  materials: [
+    (f, nth) => `For the ${nth} time, the foundries of the ${f} ran short of materials.`,
+    (f, nth) => `Material shortages returned to the ${f}, the ${nth} to idle its industry.`,
+  ],
+  influence: [
+    (f, nth) => `Political crisis gripped the ${f} anew — the ${nth} to shake its authority.`,
+    (f, nth) => `The ${f} convulsed in its ${nth} crisis of authority.`,
+  ],
 };
 
 /** Spelled-out ordinals for small counts; falls back to "Nth" past the table. */
@@ -237,21 +299,30 @@ function ordinal(n: number): string {
 export function describe(event: WorldEvent): string {
   switch (event.type) {
     case "FACTION_FOUNDED": {
-      const [faction] = event.actors;
+      const f = event.actors[0].name;
       const where = event.location
         ? ` in the ${event.location.name} system`
         : "";
-      return `The ${faction.name} rose to power${where}.`;
+      return pickVariant(event, [
+        () => `The ${f} rose to power${where}.`,
+        () => `A new power, the ${f}, emerged${where}.`,
+        () => `The banners of the ${f} were first raised${where}.`,
+      ])();
     }
 
     case "WORLD_COLONIZED": {
-      const [faction] = event.actors;
+      const f = event.actors[0].name;
       const world = event.location?.name ?? "an uncharted world";
-      return `The ${faction.name} colonized ${world}.`;
+      return pickVariant(event, [
+        () => `The ${f} colonized ${world}.`,
+        () => `Settlers of the ${f} laid claim to ${world}.`,
+        () => `${world} was brought into the fold of the ${f}.`,
+      ])();
     }
 
     case "CONFLICT": {
-      const [attacker, defender] = event.actors;
+      const a = event.actors[0].name;
+      const d = event.actors[1].name;
       const world = event.location?.name ?? "contested ground";
       // A clash that continues a war (clash ≥ 2) carries the campaign's age,
       // so the reader can follow one conflict across many cycles.
@@ -260,58 +331,100 @@ export function describe(event: WorldEvent): string {
         campaign && campaign.clash >= 2
           ? ` — the ${ordinal(campaign.clash)} clash of a war raging since cycle ${campaign.since}`
           : "";
-      return event.data.captured
-        ? `The ${attacker.name} seized ${world} from the ${defender.name}${tail}.`
-        : `The ${defender.name} repelled the ${attacker.name}'s assault on ${world}${tail}.`;
+      const variants = event.data.captured
+        ? [
+            () => `The ${a} seized ${world} from the ${d}${tail}.`,
+            () => `${world} fell to the ${a}, wrested from the ${d}${tail}.`,
+            () => `The ${d} lost ${world} as the ${a} broke through${tail}.`,
+          ]
+        : [
+            () => `The ${d} repelled the ${a}'s assault on ${world}${tail}.`,
+            () => `The ${a}'s drive on ${world} foundered against the ${d}${tail}.`,
+            () => `${world} held firm as the ${d} threw back the ${a}${tail}.`,
+          ];
+      return pickVariant(event, variants)();
     }
 
     case "RESOURCE_CRISIS": {
-      const [faction] = event.actors;
+      const f = event.actors[0].name;
       const { resource, recurrence } = event.data;
       return recurrence >= 2
-        ? CRISIS_RECUR[resource](faction.name, ordinal(recurrence))
-        : CRISIS_PROSE[resource](faction.name);
+        ? pickVariant(event, CRISIS_RECUR[resource])(f, ordinal(recurrence))
+        : pickVariant(event, CRISIS_PROSE[resource])(f);
     }
 
     case "FIRST_CONTACT": {
-      const [a, b] = event.actors;
+      const a = event.actors[0].name;
+      const b = event.actors[1].name;
       const where = event.location
         ? ` in the ${event.location.name} reach`
         : "";
-      return `First contact between the ${a.name} and the ${b.name}${where}.`;
+      return pickVariant(event, [
+        () => `First contact between the ${a} and the ${b}${where}.`,
+        () => `The ${a} and the ${b} made first contact${where}.`,
+        () => `Long-range signals confirmed the ${a} and the ${b} had found one another${where}.`,
+      ])();
     }
 
     case "FACTION_COLLAPSED": {
-      const [faction] = event.actors;
+      const f = event.actors[0].name;
+      const peak = event.data.peakWorlds;
       // A power that expanded beyond its homeworld before it fell gets a
       // fall-from-greatness framing, so its rise-and-decline arc lands in the
       // closing line (issue #20). Factions that never grew get the plain epitaph.
-      if (event.data.peakWorlds >= 2) {
-        return `Having once held ${event.data.peakWorlds} worlds, the ${faction.name} collapsed, fading from the sector.`;
-      }
-      return `The ${faction.name} collapsed, fading from the sector.`;
+      const variants =
+        peak >= 2
+          ? [
+              () => `Having once held ${peak} worlds, the ${f} collapsed, fading from the sector.`,
+              () => `The ${f}, master of ${peak} worlds at its height, fell into ruin and was gone.`,
+              () => `From ${peak} worlds to none, the ${f} collapsed and passed into history.`,
+            ]
+          : [
+              () => `The ${f} collapsed, fading from the sector.`,
+              () => `The ${f} guttered out, leaving no mark on the sector.`,
+              () => `The last holdings of the ${f} fell, and it was no more.`,
+            ];
+      return pickVariant(event, variants)();
     }
 
     case "WORLD_FORTUNE": {
-      const [faction] = event.actors;
+      const faction = event.actors[0];
       const world = event.location?.name ?? "a frontier world";
       const holder = faction ? ` held by the ${faction.name}` : "";
-      switch (event.data.fortune) {
-        case "discovery":
-          return `Prospectors struck rich new deposits on ${world}${holder}.`;
-        case "depletion":
-          return `The lodes of ${world}${holder} ran thin, dimming its yield.`;
-        case "disaster":
-          return `Catastrophe swept ${world}${holder}, scattering its people.`;
-      }
+      const byKind: Record<FortuneKind, (() => string)[]> = {
+        discovery: [
+          () => `Prospectors struck rich new deposits on ${world}${holder}.`,
+          () => `A wealth of untapped resources came to light on ${world}${holder}.`,
+          () => `${world}${holder} boomed as surveyors uncovered fresh lodes.`,
+        ],
+        depletion: [
+          () => `The lodes of ${world}${holder} ran thin, dimming its yield.`,
+          () => `${world}${holder} saw its once-rich seams played out.`,
+          () => `Output from ${world}${holder} dwindled as its reserves gave out.`,
+        ],
+        disaster: [
+          () => `Catastrophe swept ${world}${holder}, scattering its people.`,
+          () => `Disaster struck ${world}${holder}, leaving ruin in its wake.`,
+          () => `${world}${holder} was devastated, its settlements thrown into chaos.`,
+        ],
+      };
+      return pickVariant(event, byKind[event.data.fortune])();
     }
 
     case "SECTOR_CONCLUDED": {
       if (event.data.outcome === "unified") {
         const victor = event.actors[0]?.name ?? "a lone power";
-        return `The ${victor} stands unrivaled — the sector unifies under a single banner.`;
+        return pickVariant(event, [
+          () => `The ${victor} stands unrivaled — the sector unifies under a single banner.`,
+          () => `With every rival fallen, the ${victor} holds the sector alone.`,
+          () => `The long contest ends: the ${victor} reigns over a unified sector.`,
+        ])();
       }
-      return `Silence falls across the sector; no power remains to shape its history.`;
+      return pickVariant(event, [
+        () => `Silence falls across the sector; no power remains to shape its history.`,
+        () => `The last faction is gone, and the sector falls silent.`,
+        () => `No power survives; the sector's history ends in darkness.`,
+      ])();
     }
 
     default: {
