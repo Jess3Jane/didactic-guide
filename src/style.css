@@ -1,0 +1,77 @@
+:root {
+  color-scheme: dark;
+  --bg: #05060a;
+  --bg-panel: #0b0f1a;
+  --fg: #c7d2e0;
+  --fg-dim: #6b7a90;
+  --accent: #4fd1c5;
+  --accent-warm: #f6ad55;
+  font-family: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: radial-gradient(circle at 50% -10%, #101428 0%, var(--bg) 60%);
+  color: var(--fg);
+}
+
+#app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+}
+
+.boot {
+  border: 1px solid #1c2436;
+  background: var(--bg-panel);
+  border-radius: 8px;
+  padding: 2rem;
+  text-align: center;
+}
+
+.boot h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.boot .tagline {
+  margin: 0 0 1.5rem;
+  color: var(--fg-dim);
+}
+
+.boot .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--accent-warm);
+  font-size: 0.9rem;
+}
+
+.boot .status::before {
+  content: "";
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--accent-warm);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
