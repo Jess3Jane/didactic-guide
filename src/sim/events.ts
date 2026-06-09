@@ -27,7 +27,10 @@ import type {
 
 // --- Event model -------------------------------------------------------------
 
-/** The event vocabulary. Phase 2 adds `WORLD_FORTUNE` (issue #19). */
+/**
+ * The event vocabulary. Phase 2 adds `WORLD_FORTUNE` (issue #19) and
+ * `SECTOR_CONCLUDED` (issue #22), the terminal dispatch that closes a history.
+ */
 export type WorldEventType =
   | "FACTION_FOUNDED"
   | "WORLD_COLONIZED"
@@ -35,10 +38,18 @@ export type WorldEventType =
   | "RESOURCE_CRISIS"
   | "FIRST_CONTACT"
   | "FACTION_COLLAPSED"
-  | "WORLD_FORTUNE";
+  | "WORLD_FORTUNE"
+  | "SECTOR_CONCLUDED";
 
 /** Which stockpile a crisis concerns. Mirrors the keys of `Resources`. */
 export type ResourceKind = keyof Resources;
+
+/**
+ * How a history ends (issue #22). `unified` — a single power outlasts every
+ * rival and holds the sector; `dark` — the last faction falls and no one
+ * remains to make history. Either way the run has deliberately concluded.
+ */
+export type SectorOutcome = "unified" | "dark";
 
 /**
  * How a world's fortunes turned (issue #19). `discovery` enriches it, while
@@ -111,6 +122,15 @@ export interface WorldFortuneEvent extends EventBase {
   data: { fortune: FortuneKind };
 }
 
+/**
+ * The history reaches its end (issue #22). For a `unified` outcome the lone
+ * surviving faction is `actors[0]`; a `dark` outcome names no one.
+ */
+export interface SectorConcludedEvent extends EventBase {
+  type: "SECTOR_CONCLUDED";
+  data: { outcome: SectorOutcome };
+}
+
 /** The discriminated union the engine emits and the UI renders. */
 export type WorldEvent =
   | FactionFoundedEvent
@@ -119,7 +139,8 @@ export type WorldEvent =
   | ResourceCrisisEvent
   | FirstContactEvent
   | FactionCollapsedEvent
-  | WorldFortuneEvent;
+  | WorldFortuneEvent
+  | SectorConcludedEvent;
 
 /** Every event type, handy for iteration (tests, future filtering). */
 export const EVENT_TYPES: readonly WorldEventType[] = [
@@ -130,6 +151,7 @@ export const EVENT_TYPES: readonly WorldEventType[] = [
   "FIRST_CONTACT",
   "FACTION_COLLAPSED",
   "WORLD_FORTUNE",
+  "SECTOR_CONCLUDED",
 ] as const;
 
 // --- Prose templating --------------------------------------------------------
@@ -207,6 +229,14 @@ export function describe(event: WorldEvent): string {
         case "disaster":
           return `Catastrophe swept ${world}${holder}, scattering its people.`;
       }
+    }
+
+    case "SECTOR_CONCLUDED": {
+      if (event.data.outcome === "unified") {
+        const victor = event.actors[0]?.name ?? "a lone power";
+        return `The ${victor} stands unrivaled — the sector unifies under a single banner.`;
+      }
+      return `Silence falls across the sector; no power remains to shape its history.`;
     }
 
     default: {
@@ -339,5 +369,22 @@ export function worldFortune(
     actors: faction ? [ref(faction)] : [],
     location: ref(world),
     data: { fortune },
+  });
+}
+
+/**
+ * The history concludes. A `unified` outcome names its `victor`, the last
+ * faction standing; a `dark` outcome takes none — the sector has emptied.
+ */
+export function sectorConcluded(
+  tick: number,
+  outcome: SectorOutcome,
+  victor?: Faction,
+): SectorConcludedEvent {
+  return withSummary<SectorConcludedEvent>({
+    type: "SECTOR_CONCLUDED",
+    tick,
+    actors: victor ? [ref(victor)] : [],
+    data: { outcome },
   });
 }

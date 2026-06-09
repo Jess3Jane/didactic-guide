@@ -27,7 +27,8 @@ export type DispatchCategory =
   | "conflict"
   | "crisis"
   | "contact"
-  | "collapse";
+  | "collapse"
+  | "conclusion";
 
 /** The render-ready shape of a single dispatch. Pure data — no DOM. */
 export interface Dispatch {
@@ -59,6 +60,7 @@ const TYPE_META: Record<
   // Placeholder; WORLD_FORTUNE's label + colour vary by its fortune kind and
   // are resolved per-event in `toDispatch`, not from this static table.
   WORLD_FORTUNE: { kind: "Fortune", category: "crisis" },
+  SECTOR_CONCLUDED: { kind: "Epilogue", category: "conclusion" },
 };
 
 /** Per-fortune label + category, so a discovery reads as good news, not crisis. */

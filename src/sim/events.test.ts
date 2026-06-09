@@ -10,6 +10,7 @@ import {
   firstContact,
   factionCollapsed,
   worldFortune,
+  sectorConcluded,
   type FortuneKind,
   type ResourceKind,
 } from "./events";
@@ -125,6 +126,20 @@ group("describe", () => {
     expect(e.summary).toBe("Catastrophe swept Vex-9, scattering its people.");
   });
 
+  it("renders SECTOR_CONCLUDED, naming the victor when unified", () => {
+    const unified = sectorConcluded(40, "unified", helion);
+    expect(unified.actors).toEqual([{ id: "fac-0", name: "Helion Compact" }]);
+    expect(unified.summary).toBe(
+      "The Helion Compact stands unrivaled — the sector unifies under a single banner.",
+    );
+
+    const dark = sectorConcluded(40, "dark");
+    expect(dark.actors).toEqual([]);
+    expect(dark.summary).toBe(
+      "Silence falls across the sector; no power remains to shape its history.",
+    );
+  });
+
   it("produces a grammatical, non-empty sentence for every event type", () => {
     const samples = [
       factionFounded(0, helion, aldebaran),
@@ -134,6 +149,7 @@ group("describe", () => {
       firstContact(4, helion, iron, aldebaran),
       factionCollapsed(5, iron),
       worldFortune(6, helion, vex, "discovery"),
+      sectorConcluded(7, "unified", helion),
     ];
     // One sample per declared type, and each reads as a finished sentence.
     expect(new Set(samples.map((s) => s.type))).toEqual(new Set(EVENT_TYPES));

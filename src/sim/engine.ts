@@ -21,6 +21,7 @@ import {
 } from "./world";
 import {
   type WorldEvent,
+  type EntityRef,
   type ResourceKind,
   type FortuneKind,
   factionFounded,
@@ -30,6 +31,7 @@ import {
   firstContact,
   factionCollapsed,
   worldFortune,
+  sectorConcluded,
 } from "./events";
 
 // --- Tuning ------------------------------------------------------------------
@@ -123,6 +125,17 @@ const AGGRESSION: Record<string, number> = {
 type ActionKind = "COLONIZE" | "WAR" | "CONSOLIDATE";
 
 /**
+ * Where a run stands (issue #22). `ongoing` while more than one power survives;
+ * `unified` once a single faction outlasts every rival (it is the `victor`);
+ * `dark` once the last faction falls. The two terminal states are deliberate
+ * ends — the engine stops advancing and the UI surfaces them as "ended".
+ */
+export type Conclusion =
+  | { kind: "ongoing" }
+  | { kind: "unified"; victor: EntityRef }
+  | { kind: "dark" };
+
+/**
  * The live simulation. `sector` is the engine's own mutable copy of the world,
  * safe for the UI to read between ticks; `tick()` advances it one cycle and
  * returns the events produced. `foundingEvents` seeds a fresh feed with the
@@ -137,6 +150,8 @@ export interface Engine {
   tick(): WorldEvent[];
   /** The current in-world cycle (starts at 0, before the first tick). */
   getTick(): number;
+  /** Whether the run is still going, or has concluded (and how). */
+  getStatus(): Conclusion;
 }
 
 // --- Helpers -----------------------------------------------------------------
@@ -183,6 +198,10 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   const world: Sector = structuredClone(sector);
 
   let currentTick = 0;
+
+  // Where the run stands. Once terminal (unified/dark) the engine stops
+  // advancing: a concluded history is read, not re-run.
+  let conclusion: Conclusion = { kind: "ongoing" };
 
   // Factions that have passed into history; they neither act nor are acted upon.
   const collapsed = new Set<string>();
@@ -638,9 +657,35 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     return events;
   };
 
+  // --- Step 5: conclusion ----------------------------------------------------
+
+  /**
+   * Decide whether this cycle ends the history, and announce it. The sector
+   * concludes when the field of rivals empties to one (`unified`) or none
+   * (`dark`). "Unified" presumes there was a contest to win, so a single-faction
+   * sector never trips it — it simply runs until it goes dark. Fires once.
+   */
+  const assessConclusion = (tick: number): WorldEvent[] => {
+    if (conclusion.kind !== "ongoing") return [];
+    const survivors = living();
+    if (survivors.length === 0) {
+      conclusion = { kind: "dark" };
+      return [sectorConcluded(tick, "dark")];
+    }
+    if (survivors.length === 1 && factionIds.length > 1) {
+      const victor = survivors[0];
+      conclusion = { kind: "unified", victor: { id: victor.id, name: victor.name } };
+      return [sectorConcluded(tick, "unified", victor)];
+    }
+    return [];
+  };
+
   // --- The tick --------------------------------------------------------------
 
   const tick = (): WorldEvent[] => {
+    // A concluded history is settled: stop the clock and emit nothing further.
+    if (conclusion.kind !== "ongoing") return [];
+
     currentTick += 1;
     const t = currentTick;
     const events: WorldEvent[] = [];
@@ -672,6 +717,9 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     // 4. Collapse anyone who was conquered down to nothing.
     events.push(...detectCollapses(t));
 
+    // 5. If the field has narrowed to one power (or none), the history ends.
+    events.push(...assessConclusion(t));
+
     return events;
   };
 
@@ -680,5 +728,6 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     foundingEvents,
     tick,
     getTick: () => currentTick,
+    getStatus: () => conclusion,
   };
 }
