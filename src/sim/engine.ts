@@ -24,6 +24,7 @@ import {
   type EntityRef,
   type ResourceKind,
   type FortuneKind,
+  type Campaign,
   factionFounded,
   worldColonized,
   conflict,
@@ -110,6 +111,20 @@ const TENSION = {
   /** Friction a clash between the pair vents (win or lose). */
   release: 16,
 } as const;
+
+// --- Phase 2: narrative continuity (issue #20) -------------------------------
+//
+// The engine keeps a little memory so dispatches can reference what came before:
+// repeated clashes between the same powers read as one war, recurring crises are
+// counted, and a fallen faction's collapse recalls how large it once was.
+
+/**
+ * Cycles of quiet after which a fresh clash between a pair starts a *new* war
+ * rather than continuing the old one. Tension rebuilds and vents on a shorter
+ * cadence than this, so an active rivalry stays one campaign; only a genuine
+ * lull (a long peace, a front gone cold) resets the count.
+ */
+const WAR_LULL = 8;
 
 /** How belligerent each disposition is — drives tension growth and who strikes. */
 const AGGRESSION: Record<string, number> = {
@@ -214,8 +229,26 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   // into war past TENSION.threshold; a clash vents it.
   const tension = new Map<string, number>();
 
+  // --- Continuity memory (issue #20) ---
+  // Cumulative count of each crisis a faction has suffered, so a famine can
+  // announce itself as "the third to scour its colonies".
+  const crisisHistory = new Map<string, Record<ResourceKind, number>>();
+  // The running war per acquainted pair: when it began, when it last flared, and
+  // how many clashes it has seen — so repeated battles read as one campaign.
+  const campaigns = new Map<
+    string,
+    { since: number; lastClash: number; clash: number }
+  >();
+  // The most worlds each faction has ever held, so its collapse can recall the
+  // height it fell from.
+  const peakWorlds = new Map<string, number>();
+
   const factionIds = Object.keys(world.factions).sort(byId);
-  for (const id of factionIds) inCrisis.set(id, new Set());
+  for (const id of factionIds) {
+    inCrisis.set(id, new Set());
+    crisisHistory.set(id, { population: 0, energy: 0, materials: 0, influence: 0 });
+    peakWorlds.set(id, world.factions[id].ownedWorldIds.length);
+  }
 
   /** Canonical, order-independent key for a faction pair. */
   const pairKey = (a: string, b: string): string =>
@@ -303,7 +336,10 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       const low = r[kind] < CRISIS_THRESHOLD;
       if (low && !flags.has(kind)) {
         flags.add(kind);
-        events.push(resourceCrisis(tick, faction, kind));
+        // Count this crisis so a recurrence can be numbered in the dispatch.
+        const history = crisisHistory.get(faction.id)!;
+        history[kind] += 1;
+        events.push(resourceCrisis(tick, faction, kind, history[kind]));
       } else if (!low && flags.has(kind)) {
         flags.delete(kind);
       }
@@ -421,6 +457,23 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         tension.set(key, (tension.get(key) ?? 0) + gain);
       }
     }
+  };
+
+  /**
+   * Record a clash between two factions and return its place in the running war
+   * (issue #20). A clash within `WAR_LULL` cycles of the last continues the
+   * campaign; a longer gap (or a first meeting) opens a fresh one.
+   */
+  const recordClash = (a: string, b: string, tick: number): Campaign => {
+    const key = pairKey(a, b);
+    const war = campaigns.get(key);
+    if (!war || tick - war.lastClash > WAR_LULL) {
+      campaigns.set(key, { since: tick, lastClash: tick, clash: 1 });
+      return { clash: 1, since: tick };
+    }
+    war.clash += 1;
+    war.lastClash = tick;
+    return { clash: war.clash, since: war.since };
   };
 
   /** Vent the friction a clash between two factions releases. */
@@ -637,7 +690,10 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       settleResources(faction);
       settleResources(defender);
       ventTension(faction.id, defender.id);
-      return [conflict(tick, faction, defender, target, captured)];
+      // Place this clash within the ongoing war so the dispatch can read as a
+      // campaign rather than an isolated skirmish (issue #20).
+      const campaign = recordClash(faction.id, defender.id, tick);
+      return [conflict(tick, faction, defender, target, captured, campaign)];
     }
 
     return [];
@@ -651,7 +707,10 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     for (const faction of living()) {
       if (faction.ownedWorldIds.length === 0) {
         collapsed.add(faction.id);
-        events.push(factionCollapsed(tick, faction));
+        // Recall the height it fell from, captured before this collapse.
+        events.push(
+          factionCollapsed(tick, faction, peakWorlds.get(faction.id) ?? 0),
+        );
       }
     }
     return events;
@@ -712,6 +771,16 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     for (const faction of living()) {
       if (faction.ownedWorldIds.length === 0) continue; // lost everything mid-tick
       events.push(...resolveAction(faction, owner, t));
+    }
+
+    // 3b. Note each faction's high-water mark in territory, so a later collapse
+    //     can recall how large the faction once grew (issue #20). Captured after
+    //     actions resolve and before any collapse, so a wiped-out faction keeps
+    //     the peak it reached while it still held ground.
+    for (const id of factionIds) {
+      if (collapsed.has(id)) continue;
+      const held = world.factions[id].ownedWorldIds.length;
+      if (held > peakWorlds.get(id)!) peakWorlds.set(id, held);
     }
 
     // 4. Collapse anyone who was conquered down to nothing.

@@ -161,6 +161,49 @@ group("describe", () => {
   });
 });
 
+group("narrative continuity (issue #20)", () => {
+  it("frames a continuing clash as one ongoing war", () => {
+    const fourth = conflict(20, iron, helion, vex, true, { clash: 4, since: 10 });
+    expect(fourth.summary).toBe(
+      "The Iron Dominion seized Vex-9 from the Helion Compact — the fourth clash of a war raging since cycle 10.",
+    );
+    const held = conflict(22, iron, helion, vex, false, { clash: 5, since: 10 });
+    expect(held.summary).toBe(
+      "The Helion Compact repelled the Iron Dominion's assault on Vex-9 — the fifth clash of a war raging since cycle 10.",
+    );
+  });
+
+  it("leaves the opening clash of a war unadorned", () => {
+    const opener = conflict(10, iron, helion, vex, true, { clash: 1, since: 10 });
+    expect(opener.summary).toBe(
+      "The Iron Dominion seized Vex-9 from the Helion Compact.",
+    );
+    // A clash with no campaign context reads the same as before.
+    expect(conflict(10, iron, helion, vex, true).summary).toBe(opener.summary);
+  });
+
+  it("numbers a recurring crisis in the prose", () => {
+    const third = resourceCrisis(30, helion, "population", 3);
+    expect(third.summary).toBe(
+      "Famine returned to the Helion Compact — the third to scour its colonies.",
+    );
+    // The first occurrence keeps the original, un-numbered phrasing.
+    expect(resourceCrisis(7, helion, "population", 1).summary).toBe(
+      "Famine gripped the Helion Compact as its colonies starved.",
+    );
+  });
+
+  it("reads a once-grown faction's collapse as a fall", () => {
+    expect(factionCollapsed(40, iron, 5).summary).toBe(
+      "Having once held 5 worlds, the Iron Dominion collapsed, fading from the sector.",
+    );
+    // A faction that never expanded past its homeworld gets the plain epitaph.
+    expect(factionCollapsed(40, iron, 1).summary).toBe(
+      "The Iron Dominion collapsed, fading from the sector.",
+    );
+  });
+});
+
 group("event construction", () => {
   it("stamps summary equal to describe()", () => {
     const e = conflict(5, iron, helion, vex, true);

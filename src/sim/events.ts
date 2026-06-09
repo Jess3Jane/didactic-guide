@@ -94,16 +94,38 @@ export interface WorldColonizedEvent extends EventBase {
   type: "WORLD_COLONIZED";
 }
 
-/** Two factions contest a world; `captured` records whether it changed hands. */
-export interface ConflictEvent extends EventBase {
-  type: "CONFLICT";
-  data: { captured: boolean };
+/**
+ * Continuity context for an ongoing war (issue #20). A clash between two powers
+ * is rarely a one-off: bordering rivals fight again and again, and `Campaign`
+ * lets a dispatch place this clash within that longer war — "the fourth clash
+ * of a war raging since cycle 12" — so the chronicle reads as a campaign with
+ * an arc, not a stream of unrelated skirmishes.
+ */
+export interface Campaign {
+  /** 1-based index of this clash within the current war between the pair. */
+  clash: number;
+  /** The cycle the current war's opening clash occurred on. */
+  since: number;
 }
 
-/** A faction's stockpile of `resource` runs critically short. */
+/**
+ * Two factions contest a world; `captured` records whether it changed hands.
+ * `campaign` carries the war's running context (issue #20) when this is part of
+ * an ongoing conflict.
+ */
+export interface ConflictEvent extends EventBase {
+  type: "CONFLICT";
+  data: { captured: boolean; campaign?: Campaign };
+}
+
+/**
+ * A faction's stockpile of `resource` runs critically short. `recurrence` is
+ * the 1-based count of how many times this faction has suffered *this* crisis
+ * (issue #20), so a repeat reads as "the third famine", not an isolated event.
+ */
 export interface ResourceCrisisEvent extends EventBase {
   type: "RESOURCE_CRISIS";
-  data: { resource: ResourceKind };
+  data: { resource: ResourceKind; recurrence: number };
 }
 
 /** Two factions become aware of each other for the first time. */
@@ -111,9 +133,14 @@ export interface FirstContactEvent extends EventBase {
   type: "FIRST_CONTACT";
 }
 
-/** A faction loses its last holding and passes into history. */
+/**
+ * A faction loses its last holding and passes into history. `peakWorlds` is the
+ * most territory it ever held (issue #20), so a collapse can read as a fall from
+ * greatness rather than a flat line item.
+ */
 export interface FactionCollapsedEvent extends EventBase {
   type: "FACTION_COLLAPSED";
+  data: { peakWorlds: number };
 }
 
 /** A world's environment turns — a discovery, depletion, or disaster. */
@@ -169,6 +196,38 @@ const CRISIS_PROSE: Record<ResourceKind, (f: string) => string> = {
 };
 
 /**
+ * Phrasings for a *recurring* crisis (issue #20), which name the count so the
+ * feed accrues a pattern — "the third famine" — rather than reporting each as if
+ * it were the first. `nth` is the spelled-out ordinal (e.g. "third").
+ */
+const CRISIS_RECUR: Record<ResourceKind, (f: string, nth: string) => string> = {
+  population: (f, nth) => `Famine returned to the ${f} — the ${nth} to scour its colonies.`,
+  energy: (f, nth) => `The ${f}'s reactors failed again, its ${nth} energy crisis.`,
+  materials: (f, nth) => `For the ${nth} time, the foundries of the ${f} ran short of materials.`,
+  influence: (f, nth) => `Political crisis gripped the ${f} anew — the ${nth} to shake its authority.`,
+};
+
+/** Spelled-out ordinals for small counts; falls back to "Nth" past the table. */
+const ORDINALS = [
+  "zeroth",
+  "first",
+  "second",
+  "third",
+  "fourth",
+  "fifth",
+  "sixth",
+  "seventh",
+  "eighth",
+  "ninth",
+  "tenth",
+] as const;
+
+/** Render `n` as a spelled-out ordinal ("third"), or "Nth" for larger counts. */
+function ordinal(n: number): string {
+  return ORDINALS[n] ?? `${n}th`;
+}
+
+/**
  * Render an event into a single, grammatical dispatch.
  *
  * Derives prose purely from the event's structured fields; it never reads
@@ -194,14 +253,24 @@ export function describe(event: WorldEvent): string {
     case "CONFLICT": {
       const [attacker, defender] = event.actors;
       const world = event.location?.name ?? "contested ground";
+      // A clash that continues a war (clash ≥ 2) carries the campaign's age,
+      // so the reader can follow one conflict across many cycles.
+      const campaign = event.data.campaign;
+      const tail =
+        campaign && campaign.clash >= 2
+          ? ` — the ${ordinal(campaign.clash)} clash of a war raging since cycle ${campaign.since}`
+          : "";
       return event.data.captured
-        ? `The ${attacker.name} seized ${world} from the ${defender.name}.`
-        : `The ${defender.name} repelled the ${attacker.name}'s assault on ${world}.`;
+        ? `The ${attacker.name} seized ${world} from the ${defender.name}${tail}.`
+        : `The ${defender.name} repelled the ${attacker.name}'s assault on ${world}${tail}.`;
     }
 
     case "RESOURCE_CRISIS": {
       const [faction] = event.actors;
-      return CRISIS_PROSE[event.data.resource](faction.name);
+      const { resource, recurrence } = event.data;
+      return recurrence >= 2
+        ? CRISIS_RECUR[resource](faction.name, ordinal(recurrence))
+        : CRISIS_PROSE[resource](faction.name);
     }
 
     case "FIRST_CONTACT": {
@@ -214,6 +283,12 @@ export function describe(event: WorldEvent): string {
 
     case "FACTION_COLLAPSED": {
       const [faction] = event.actors;
+      // A power that expanded beyond its homeworld before it fell gets a
+      // fall-from-greatness framing, so its rise-and-decline arc lands in the
+      // closing line (issue #20). Factions that never grew get the plain epitaph.
+      if (event.data.peakWorlds >= 2) {
+        return `Having once held ${event.data.peakWorlds} worlds, the ${faction.name} collapsed, fading from the sector.`;
+      }
       return `The ${faction.name} collapsed, fading from the sector.`;
     }
 
@@ -305,27 +380,33 @@ export function conflict(
   defender: Faction,
   world: World,
   captured: boolean,
+  campaign?: Campaign,
 ): ConflictEvent {
   return withSummary<ConflictEvent>({
     type: "CONFLICT",
     tick,
     actors: [ref(attacker), ref(defender)],
     location: ref(world),
-    data: { captured },
+    data: campaign ? { captured, campaign } : { captured },
   });
 }
 
-/** A faction's `resource` stockpile hits a critical low. */
+/**
+ * A faction's `resource` stockpile hits a critical low. `recurrence` (default 1)
+ * is how many times this faction has hit *this* crisis, so repeats can be
+ * counted in the prose (issue #20).
+ */
 export function resourceCrisis(
   tick: number,
   faction: Faction,
   resource: ResourceKind,
+  recurrence = 1,
 ): ResourceCrisisEvent {
   return withSummary<ResourceCrisisEvent>({
     type: "RESOURCE_CRISIS",
     tick,
     actors: [ref(faction)],
-    data: { resource },
+    data: { resource, recurrence },
   });
 }
 
@@ -344,15 +425,21 @@ export function firstContact(
   });
 }
 
-/** A faction loses its last world and collapses. */
+/**
+ * A faction loses its last world and collapses. `peakWorlds` (default: the
+ * faction's current holdings) is the most territory it ever held, so the
+ * dispatch can frame a fall from greatness (issue #20).
+ */
 export function factionCollapsed(
   tick: number,
   faction: Faction,
+  peakWorlds = faction.ownedWorldIds.length,
 ): FactionCollapsedEvent {
   return withSummary<FactionCollapsedEvent>({
     type: "FACTION_COLLAPSED",
     tick,
     actors: [ref(faction)],
+    data: { peakWorlds },
   });
 }
 
