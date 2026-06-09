@@ -145,6 +145,14 @@ describe("emergence", () => {
     expect(seen.size).toBeGreaterThanOrEqual(4);
   });
 
+  it("emits world-fortune dispatches as the environment drifts", () => {
+    const seen = new Set<WorldEventType>();
+    for (let i = 0; i < 10; i++) {
+      for (const e of run(engineFromSeed(`fortune-${i}`), 120)) seen.add(e.type);
+    }
+    expect(seen.has("WORLD_FORTUNE")).toBe(true);
+  });
+
   it("only contacts a given pair of factions once", () => {
     const log = run(engineFromSeed("acquaintance"), 150);
     const pairs = log
@@ -156,5 +164,55 @@ describe("emergence", () => {
           .join("|"),
       );
     expect(new Set(pairs).size).toBe(pairs.length);
+  });
+});
+
+describe("sustaining the simulation (issue #19)", () => {
+  /** The last cycle on which any event was emitted over `ticks` cycles. */
+  const lastEventTick = (engine: Engine, ticks: number): number => {
+    let last = 0;
+    for (let t = 1; t <= ticks; t++) {
+      if (engine.tick().length > 0) last = t;
+    }
+    return last;
+  };
+
+  it("keeps emitting events well past the sub-30s fizzle, across seeds", () => {
+    // At 1x (~700ms/cycle) 30 seconds is roughly cycle 43. A sustained sector
+    // should still be producing news long after that, not stalling at ~cycle 20.
+    const THIRTY_SECONDS = 43;
+    let sustained = 0;
+    const SEEDS = 20;
+    for (let i = 0; i < SEEDS; i++) {
+      if (lastEventTick(engineFromSeed(`sustain-${i}`), 150) > THIRTY_SECONDS) {
+        sustained++;
+      }
+    }
+    // The median run (and then some) must outlast the old fizzle point.
+    expect(sustained).toBeGreaterThan(SEEDS / 2);
+  });
+
+  it("produces a steady stream, not a front-loaded burst", () => {
+    // Events should keep coming in the back half of a run, not only at the start.
+    const engine = engineFromSeed("steady");
+    run(engine, 60); // burn through the opening
+    const later = run(engine, 60); // cycles 61–120
+    expect(later.length).toBeGreaterThan(0);
+  });
+
+  it("yields visibly different trajectories across seeds", () => {
+    // Different seeds should not converge on the same shape: compare the
+    // surviving-faction count and total event volume across a sample.
+    const shapes = new Set<string>();
+    for (let i = 0; i < 12; i++) {
+      const engine = engineFromSeed(`diverge-${i}`);
+      const events = run(engine, 150);
+      const living = Object.values(engine.sector.factions).filter(
+        (f) => f.ownedWorldIds.length > 0,
+      ).length;
+      // Bucket event volume coarsely so trivial jitter doesn't inflate variety.
+      shapes.add(`${living}:${Math.floor(events.length / 25)}`);
+    }
+    expect(shapes.size).toBeGreaterThan(3);
   });
 });

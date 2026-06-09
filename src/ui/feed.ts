@@ -12,7 +12,7 @@
 //      the DOM, newest first, capping how many it keeps so a long run stays
 //      responsive.
 
-import type { WorldEvent, WorldEventType } from "../sim/events";
+import type { FortuneKind, WorldEvent, WorldEventType } from "../sim/events";
 
 // --- View model --------------------------------------------------------------
 
@@ -56,6 +56,19 @@ const TYPE_META: Record<
   RESOURCE_CRISIS: { kind: "Crisis", category: "crisis" },
   FIRST_CONTACT: { kind: "First Contact", category: "contact" },
   FACTION_COLLAPSED: { kind: "Collapse", category: "collapse" },
+  // Placeholder; WORLD_FORTUNE's label + colour vary by its fortune kind and
+  // are resolved per-event in `toDispatch`, not from this static table.
+  WORLD_FORTUNE: { kind: "Fortune", category: "crisis" },
+};
+
+/** Per-fortune label + category, so a discovery reads as good news, not crisis. */
+const FORTUNE_META: Record<
+  FortuneKind,
+  { kind: string; category: DispatchCategory }
+> = {
+  discovery: { kind: "Discovery", category: "expansion" },
+  depletion: { kind: "Depletion", category: "crisis" },
+  disaster: { kind: "Disaster", category: "crisis" },
 };
 
 /**
@@ -66,7 +79,10 @@ const TYPE_META: Record<
  * Node and cheap to call per event.
  */
 export function toDispatch(event: WorldEvent): Dispatch {
-  const meta = TYPE_META[event.type];
+  const meta =
+    event.type === "WORLD_FORTUNE"
+      ? FORTUNE_META[event.data.fortune]
+      : TYPE_META[event.type];
   return {
     cycle: event.tick,
     kind: meta.kind,

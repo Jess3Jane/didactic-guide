@@ -27,17 +27,25 @@ import type {
 
 // --- Event model -------------------------------------------------------------
 
-/** The Phase 1 event vocabulary. Richer types arrive with Phase 2 depth. */
+/** The event vocabulary. Phase 2 adds `WORLD_FORTUNE` (issue #19). */
 export type WorldEventType =
   | "FACTION_FOUNDED"
   | "WORLD_COLONIZED"
   | "CONFLICT"
   | "RESOURCE_CRISIS"
   | "FIRST_CONTACT"
-  | "FACTION_COLLAPSED";
+  | "FACTION_COLLAPSED"
+  | "WORLD_FORTUNE";
 
 /** Which stockpile a crisis concerns. Mirrors the keys of `Resources`. */
 export type ResourceKind = keyof Resources;
+
+/**
+ * How a world's fortunes turned (issue #19). `discovery` enriches it, while
+ * `depletion` and `disaster` are blows — the boom/bust pressure that keeps a
+ * sector's economy from settling into a dead, silent equilibrium.
+ */
+export type FortuneKind = "discovery" | "depletion" | "disaster";
 
 /**
  * A prose-ready reference to a named entity (faction, world, or system).
@@ -97,6 +105,12 @@ export interface FactionCollapsedEvent extends EventBase {
   type: "FACTION_COLLAPSED";
 }
 
+/** A world's environment turns — a discovery, depletion, or disaster. */
+export interface WorldFortuneEvent extends EventBase {
+  type: "WORLD_FORTUNE";
+  data: { fortune: FortuneKind };
+}
+
 /** The discriminated union the engine emits and the UI renders. */
 export type WorldEvent =
   | FactionFoundedEvent
@@ -104,9 +118,10 @@ export type WorldEvent =
   | ConflictEvent
   | ResourceCrisisEvent
   | FirstContactEvent
-  | FactionCollapsedEvent;
+  | FactionCollapsedEvent
+  | WorldFortuneEvent;
 
-/** Every Phase 1 event type, handy for iteration (tests, future filtering). */
+/** Every event type, handy for iteration (tests, future filtering). */
 export const EVENT_TYPES: readonly WorldEventType[] = [
   "FACTION_FOUNDED",
   "WORLD_COLONIZED",
@@ -114,6 +129,7 @@ export const EVENT_TYPES: readonly WorldEventType[] = [
   "RESOURCE_CRISIS",
   "FIRST_CONTACT",
   "FACTION_COLLAPSED",
+  "WORLD_FORTUNE",
 ] as const;
 
 // --- Prose templating --------------------------------------------------------
@@ -177,6 +193,20 @@ export function describe(event: WorldEvent): string {
     case "FACTION_COLLAPSED": {
       const [faction] = event.actors;
       return `The ${faction.name} collapsed, fading from the sector.`;
+    }
+
+    case "WORLD_FORTUNE": {
+      const [faction] = event.actors;
+      const world = event.location?.name ?? "a frontier world";
+      const holder = faction ? ` held by the ${faction.name}` : "";
+      switch (event.data.fortune) {
+        case "discovery":
+          return `Prospectors struck rich new deposits on ${world}${holder}.`;
+        case "depletion":
+          return `The lodes of ${world}${holder} ran thin, dimming its yield.`;
+        case "disaster":
+          return `Catastrophe swept ${world}${holder}, scattering its people.`;
+      }
     }
 
     default: {
@@ -293,5 +323,21 @@ export function factionCollapsed(
     type: "FACTION_COLLAPSED",
     tick,
     actors: [ref(faction)],
+  });
+}
+
+/** A world's fortunes turn, for good (`discovery`) or ill. */
+export function worldFortune(
+  tick: number,
+  faction: Faction | null,
+  world: World,
+  fortune: FortuneKind,
+): WorldFortuneEvent {
+  return withSummary<WorldFortuneEvent>({
+    type: "WORLD_FORTUNE",
+    tick,
+    actors: faction ? [ref(faction)] : [],
+    location: ref(world),
+    data: { fortune },
   });
 }

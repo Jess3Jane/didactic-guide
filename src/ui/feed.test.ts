@@ -8,6 +8,7 @@ import {
   resourceCrisis,
   firstContact,
   factionCollapsed,
+  worldFortune,
   type WorldEvent,
 } from "../sim/events";
 import { createFeed, toDispatch } from "./feed";
@@ -85,6 +86,20 @@ group("toDispatch", () => {
   it("leaves location undefined when the event carries none", () => {
     const d = toDispatch(factionCollapsed(9, iron));
     expect(d.location).toBeUndefined();
+  });
+
+  it("colours WORLD_FORTUNE by its kind — discovery is good news", () => {
+    const discovery = toDispatch(worldFortune(6, helion, vex, "discovery"));
+    expect(discovery.category).toBe("expansion");
+    expect(discovery.kind).toBe("Discovery");
+
+    const disaster = toDispatch(worldFortune(6, helion, vex, "disaster"));
+    expect(disaster.category).toBe("crisis");
+    expect(disaster.kind).toBe("Disaster");
+
+    expect(toDispatch(worldFortune(6, helion, vex, "depletion")).category).toBe(
+      "crisis",
+    );
   });
 });
 

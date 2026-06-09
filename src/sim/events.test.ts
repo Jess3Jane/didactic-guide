@@ -9,6 +9,8 @@ import {
   resourceCrisis,
   firstContact,
   factionCollapsed,
+  worldFortune,
+  type FortuneKind,
   type ResourceKind,
 } from "./events";
 
@@ -104,6 +106,25 @@ group("describe", () => {
     expect(e.summary).toBe("The Iron Dominion collapsed, fading from the sector.");
   });
 
+  it("renders WORLD_FORTUNE per fortune kind, naming the holder", () => {
+    const kinds: FortuneKind[] = ["discovery", "depletion", "disaster"];
+    for (const kind of kinds) {
+      const e = worldFortune(8, helion, vex, kind);
+      expect(e.summary).toContain("Vex-9");
+      expect(e.summary).toContain("Helion Compact");
+      expect(e.summary).toMatch(/\.$/);
+    }
+    expect(worldFortune(8, helion, vex, "discovery").summary).toBe(
+      "Prospectors struck rich new deposits on Vex-9 held by the Helion Compact.",
+    );
+  });
+
+  it("renders WORLD_FORTUNE without a holding faction", () => {
+    const e = worldFortune(8, null, vex, "disaster");
+    expect(e.actors).toEqual([]);
+    expect(e.summary).toBe("Catastrophe swept Vex-9, scattering its people.");
+  });
+
   it("produces a grammatical, non-empty sentence for every event type", () => {
     const samples = [
       factionFounded(0, helion, aldebaran),
@@ -112,6 +133,7 @@ group("describe", () => {
       resourceCrisis(3, helion, "energy"),
       firstContact(4, helion, iron, aldebaran),
       factionCollapsed(5, iron),
+      worldFortune(6, helion, vex, "discovery"),
     ];
     // One sample per declared type, and each reads as a finished sentence.
     expect(new Set(samples.map((s) => s.type))).toEqual(new Set(EVENT_TYPES));
