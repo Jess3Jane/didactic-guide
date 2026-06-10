@@ -31,6 +31,11 @@ import type { PostureShift } from "../sim/posture";
  * the dispatch) and as the "event type" axis of the feed filter (issue #26).
  * Kept separate from `WorldEventType` so the palette — and the filter — can
  * stay coarse and legible even as the event vocabulary grows.
+ *
+ * Each event maps to exactly one filter category (enforced by test, issue
+ * #42); when an event should *read* differently from how it *filters* — a
+ * negotiated peace files under Conflict but shouldn't glow red — the meta
+ * entry carries a separate visual `accent`.
  */
 export type DispatchCategory =
   | "founding"
@@ -50,8 +55,10 @@ export interface Dispatch {
   cycle: number;
   /** Human label for the event type, e.g. "First Contact". */
   kind: string;
-  /** Coarse category driving the colour accent. */
+  /** Coarse category driving the event-type filter (issue #26). */
   category: DispatchCategory;
+  /** Colour accent for styling; usually `category`, but may differ (#42). */
+  accent: DispatchCategory;
   /** Primary faction tag (first actor), if any. */
   faction?: string;
   /** Location tag (world or system), if the event carries one. */
@@ -60,11 +67,18 @@ export interface Dispatch {
   summary: string;
 }
 
+/**
+ * Label, filter category, and (when it differs) visual accent for one event
+ * type or sub-kind. `accent` defaults to `category` in `toDispatch`.
+ */
+interface DispatchMeta {
+  kind: string;
+  category: DispatchCategory;
+  accent?: DispatchCategory;
+}
+
 /** Per-type label + category. One entry per `WorldEventType`. */
-const TYPE_META: Record<
-  WorldEventType,
-  { kind: string; category: DispatchCategory }
-> = {
+const TYPE_META: Record<WorldEventType, DispatchMeta> = {
   FACTION_FOUNDED: { kind: "Founding", category: "founding" },
   WORLD_COLONIZED: { kind: "Colonization", category: "expansion" },
   WAR_DECLARED: { kind: "War Declared", category: "conflict" },
@@ -97,27 +111,26 @@ const DOCTRINE_META: Record<PostureShift, { kind: string }> = {
 };
 
 /** Per-fortune label + category, so a discovery reads as good news, not crisis. */
-const FORTUNE_META: Record<
-  FortuneKind,
-  { kind: string; category: DispatchCategory }
-> = {
+const FORTUNE_META: Record<FortuneKind, DispatchMeta> = {
   discovery: { kind: "Discovery", category: "expansion" },
   depletion: { kind: "Depletion", category: "crisis" },
   disaster: { kind: "Disaster", category: "crisis" },
 };
 
 /**
- * Per-diplomacy-kind label + category. Most political beats share the calm
- * `diplomacy` accent; a `threat` or `betrayal` is a hostile turn and borrows
- * the `conflict` red so the feed reads the souring at a glance.
+ * Per-diplomacy-kind label + category. The war-adjacent kinds file under
+ * `conflict` so the Conflict filter shows a war's whole arc — the ultimatum
+ * that presages it, the betrayal that opens it, the peace that closes it
+ * (issue #42); wars also end as `WAR_ENDED`, already conflict. A `threat` or
+ * `betrayal` is a hostile turn and wears the `conflict` red, but a `peace` is
+ * good news ending a war, so it keeps the calm `diplomacy` accent while still
+ * filtering with the war it concludes. The genuinely peacetime beats — pact,
+ * alliance, trade — stay under `diplomacy`.
  */
-const DIPLOMACY_META: Record<
-  DiplomacyKind,
-  { kind: string; category: DispatchCategory }
-> = {
+const DIPLOMACY_META: Record<DiplomacyKind, DispatchMeta> = {
   pact: { kind: "Pact", category: "diplomacy" },
   alliance: { kind: "Alliance", category: "diplomacy" },
-  peace: { kind: "Peace", category: "diplomacy" },
+  peace: { kind: "Peace", category: "conflict", accent: "diplomacy" },
   trade: { kind: "Trade", category: "diplomacy" },
   threat: { kind: "Ultimatum", category: "conflict" },
   betrayal: { kind: "Betrayal", category: "conflict" },
@@ -129,7 +142,7 @@ const DIPLOMACY_META: Record<
  * it has actually appeared this run (see `createFeed`), so an empty sector shows
  * no spurious filters — but when it does list them, this fixes their order.
  */
-const CATEGORY_ORDER: readonly DispatchCategory[] = [
+export const CATEGORY_ORDER: readonly DispatchCategory[] = [
   "founding",
   "expansion",
   "conflict",
@@ -142,7 +155,7 @@ const CATEGORY_ORDER: readonly DispatchCategory[] = [
   "conclusion",
 ];
 
-const CATEGORY_FILTER_LABEL: Record<DispatchCategory, string> = {
+export const CATEGORY_FILTER_LABEL: Record<DispatchCategory, string> = {
   founding: "Foundings",
   expansion: "Expansion",
   conflict: "Conflict",
@@ -163,18 +176,19 @@ const CATEGORY_FILTER_LABEL: Record<DispatchCategory, string> = {
  * Node and cheap to call per event.
  */
 export function toDispatch(event: WorldEvent): Dispatch {
-  const meta =
+  const meta: DispatchMeta =
     event.type === "WORLD_FORTUNE"
       ? FORTUNE_META[event.data.fortune]
       : event.type === "DIPLOMACY"
         ? DIPLOMACY_META[event.data.kind]
         : event.type === "FACTION_DOCTRINE"
-          ? { kind: DOCTRINE_META[event.data.shift].kind, category: "doctrine" as const }
+          ? { kind: DOCTRINE_META[event.data.shift].kind, category: "doctrine" }
           : TYPE_META[event.type];
   return {
     cycle: event.tick,
     kind: meta.kind,
     category: meta.category,
+    accent: meta.accent ?? meta.category,
     faction: event.actors[0]?.name,
     location: event.location?.name,
     summary: event.summary,
@@ -219,7 +233,9 @@ const DEFAULT_MAX_ENTRIES = 300;
  */
 function renderDispatch(doc: Document, d: Dispatch): HTMLElement {
   const article = doc.createElement("article");
-  article.className = `dispatch dispatch--${d.category}`;
+  // The class drives the colour accent, the data attribute the filter; they
+  // usually agree, but e.g. a Peace files under Conflict yet reads calm (#42).
+  article.className = `dispatch dispatch--${d.accent}`;
   article.setAttribute("role", "article");
   article.setAttribute(
     "aria-label",
