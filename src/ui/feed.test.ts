@@ -3,7 +3,9 @@ import { describe as group, it, expect, beforeEach } from "vitest";
 import type { Faction, StarSystem, World } from "../sim/world";
 import {
   factionFounded,
+  factionSeceded,
   worldColonized,
+  worldAbandoned,
   conflict,
   warDeclared,
   warEnded,
@@ -471,6 +473,7 @@ const DIPLOMACY_SAMPLES: Record<DiplomacyKind, WorldEvent> = {
   trade: diplomacy(0, "trade", helion, iron),
   threat: diplomacy(0, "threat", helion, iron),
   betrayal: diplomacy(0, "betrayal", helion, iron),
+  renounce: diplomacy(0, "renounce", helion, iron),
 };
 
 const FORTUNE_SAMPLES: Record<FortuneKind, WorldEvent> = {
@@ -486,7 +489,9 @@ const DOCTRINE_SAMPLES: Record<PostureShift, WorldEvent> = {
 
 const SAMPLES_BY_TYPE: Record<WorldEventType, readonly WorldEvent[]> = {
   FACTION_FOUNDED: [factionFounded(0, helion, helionHome)],
+  FACTION_SECEDED: [factionSeceded(0, iron, helion, helionHome)],
   WORLD_COLONIZED: [worldColonized(0, helion, vex)],
+  WORLD_ABANDONED: [worldAbandoned(0, helion, vex)],
   WAR_DECLARED: [warDeclared(0, iron, helion)],
   CONFLICT: [conflict(0, iron, helion, vex, true)],
   WAR_ENDED: [warEnded(0, helion, iron, "repelled", 0, 1)],

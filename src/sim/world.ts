@@ -192,7 +192,8 @@ const FACTION_NOUNS = [
   "Accord",
 ] as const;
 
-const DISPOSITIONS: readonly Disposition[] = [
+/** Every disposition, exported so mid-run foundings (issue #39) can draw one. */
+export const DISPOSITIONS: readonly Disposition[] = [
   "expansionist",
   "militarist",
   "industrious",
@@ -347,6 +348,28 @@ export function generateLeader(
   const title = rng.pick(LEADER_TITLES[disposition]);
   const trait = rng.pick(LEADER_TRAITS);
   return { name: `${given} ${surname}`, title, trait, since };
+}
+
+/**
+ * Draw a faction name not already in `taken` (issue #39). Mid-run foundings —
+ * rebel states seceding from a troubled power — draw from the same pools as
+ * worldgen, retrying a few times on collision and then falling back to a
+ * numbered designation so the name stays unique even deep into a long history.
+ * Deterministic: all draws flow through `rng`.
+ */
+export function generateFactionName(
+  rng: Rng,
+  taken: ReadonlySet<string>,
+): string {
+  let base = "";
+  for (let i = 0; i < 8; i++) {
+    base = `${rng.pick(FACTION_ADJECTIVES)} ${rng.pick(FACTION_NOUNS)}`;
+    if (!taken.has(base)) return base;
+  }
+  for (let n = 2; ; n++) {
+    const name = `${base} ${ROMAN[n - 1] ?? n}`;
+    if (!taken.has(name)) return name;
+  }
 }
 
 // --- Generation --------------------------------------------------------------

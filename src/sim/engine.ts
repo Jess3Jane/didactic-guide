@@ -18,6 +18,8 @@ import {
   type World,
   type StarSystem,
   type LeaderTrait,
+  DISPOSITIONS,
+  generateFactionName,
   generateLeader,
   systemNeighbors,
 } from "./world";
@@ -29,7 +31,9 @@ import {
   type Campaign,
   type LeadershipChange,
   factionFounded,
+  factionSeceded,
   worldColonized,
+  worldAbandoned,
   conflict,
   resourceCrisis,
   firstContact,
@@ -68,17 +72,28 @@ const COST = {
    * Pressing a single clash. A multi-cycle war is many clashes (issue #24), so
    * the per-clash cost is modest — enough to bleed an over-stretched campaign
    * dry over time, but light enough that an aggressor can sustain an offensive
-   * across the several cycles a front takes to break.
+   * across the several cycles a front takes to break. Population is the dear
+   * part (issue #39): it recovers far more slowly than materiel, so each war
+   * genuinely spends a generation and buys the peace that follows it.
    */
-  war: { population: 4, energy: 8, materials: 9 },
+  war: { population: 6, energy: 8, materials: 9 },
   /** Extra attrition the attacker eats when an assault is thrown back. */
   warFailure: { population: 3, energy: 3, materials: 4 },
   /** What the defender spends holding the line each clash. */
   defense: { energy: 6, materials: 6 },
 } as const;
 
-/** What a CONSOLIDATE turn recovers — the pressure-release valve. */
+/**
+ * What a CONSOLIDATE turn recovers — the pressure-release valve. Population is
+ * included (issue #39): without it, a battered power whose people were bled by
+ * war and disaster could never again afford an action, and the whole sector
+ * would paralyse into eternal consolidation — the frozen second act. With it,
+ * retrenchment is a *recovery arc*: a decade or two of quiet, then the strength
+ * to act (and to fight) returns. Kept gentle so the rebuilding takes an era,
+ * not a moment.
+ */
 const CONSOLIDATE_RECOVERY = {
+  population: 2,
   energy: 8,
   materials: 6,
   influence: 4,
@@ -115,6 +130,14 @@ const DRIFT = {
   /** Hazard a disaster adds, and the fraction of garrison population it costs. */
   disasterHazard: { min: 0.15, max: 0.3 },
   disasterPopLoss: { min: 0.08, max: 0.18 },
+  /**
+   * Hazard a settled world sheds per cycle (issue #39). Without healing,
+   * recurring disasters ratchet hazard permanently upward until attrition
+   * outruns population growth everywhere and the sector paralyses — so a
+   * disaster wounds for decades, not forever, and settled worlds are slowly
+   * tamed.
+   */
+  hazardRecovery: 0.01,
 } as const;
 
 /**
@@ -128,10 +151,16 @@ const TENSION = {
   base: 1,
   /** Extra friction per point of summed disposition aggression. */
   perAggression: 0.6,
-  /** Friction at which the aggressor will force a war. */
-  threshold: 22,
+  /**
+   * Friction at which the aggressor will force a war. Raised for Phase 3
+   * (issue #39): with populations now recovering between wars instead of
+   * dying out, this threshold is what sets the rhythm of the long run — high
+   * enough that rival powers get an era of armed peace between their wars,
+   * low enough that the peace always ends.
+   */
+  threshold: 48,
   /** Friction a clash between the pair vents (win or lose). */
-  release: 16,
+  release: 32,
 } as const;
 
 // --- Phase 2: narrative continuity (issue #20) -------------------------------
@@ -291,6 +320,94 @@ const WAR = {
   peaceMomentum: 42,
 } as const;
 
+// --- Phase 3: late-game destabilizers (issue #39) -----------------------------
+//
+// Phase 2 sectors settled permanently after the opening act: every surviving
+// pair ended up pact-bound, pacts never dissolved (betrayal needs a strength
+// edge that parity-locked rivals never have), no world ever returned to the
+// unclaimed pool, and no faction ever fractured from within. Three coupled
+// destabilizers keep the map moving after the opening:
+//   - *pacts fray*: a long-soured pact can be openly renounced, re-opening the
+//     war pressure it had stayed — so a peace is an era that can end;
+//   - *internal fractures*: a large power under sustained, visible trouble can
+//     split, its outlying worlds seceding as a rebel successor state;
+//   - *withdrawal*: a strained, sprawling power may abandon its most marginal
+//     world, returning it to the unclaimed pool so colonization — the engine of
+//     friction — can return to a fully-claimed sector.
+
+/** Pacts fray: a soured, aged pact can be cast off, ending a long peace. */
+const RENOUNCE = {
+  /** Cycles a pact must stand before it can be renounced — every peace gets an era. */
+  minAge: 24,
+  /** Renunciation tempts only once standing has soured to/below this. */
+  standingAt: RELATION.rivalryAt,
+  /** ...and only a sufficiently aggressive power does it (same floor as coercion). */
+  aggressorFloor: DIPLOMACY.aggressorFloor,
+  /** Per-cycle chance an eligible pact is cast off. */
+  chance: 0.1,
+  /** The open insult sours the pair further and raises war pressure. */
+  standingBlow: -10,
+  tensionSurge: 8,
+  /**
+   * A negotiated peace settles the war's grievances: the pair's standing rises
+   * to at least this floor, so the new pact opens a genuine era of peace rather
+   * than an instantly-renounceable truce over a still-bleeding feud.
+   */
+  peaceFloor: -10,
+} as const;
+
+/** Internal fractures: a long-troubled great power can split in two. */
+const SECESSION = {
+  /** A faction must hold at least this many worlds for a rupture to be viable. */
+  minWorlds: 4,
+  /**
+   * Cycles of *visible* trouble (an active crisis, a defensive footing) before
+   * secession can fire, so the rupture is traceable to dispatches the reader
+   * has already seen. Quiet cycles bleed the count back down.
+   */
+  unrest: 12,
+  /** Per-cycle chance once eligible. */
+  chance: 0.15,
+  /** No new rebel states once the sector is this crowded (pacing + palette bound). */
+  maxFactions: 7,
+  /** Standing the rebel and its parent open at — born rivals. */
+  standing: -45,
+  /** War pressure the rupture itself seeds between parent and rebel. */
+  tension: 12,
+} as const;
+
+/** Withdrawal: a strained power sheds its most marginal world. */
+const ABANDON = {
+  /** Only a power sprawled across at least this many worlds will cut one loose. */
+  minWorlds: 3,
+  /** Per-cycle chance, checked only on a strained, consolidating faction. */
+  chance: 0.06,
+  /**
+   * Cycles an abandoned world lies fallow before anyone will recolonize it, so
+   * a withdrawal reads as an era-scale retreat rather than a world flickering
+   * in and out of a realm every few cycles.
+   */
+  fallow: 25,
+} as const;
+
+/**
+ * Wars and colonies *of choice* are launched from strength (issue #39): the
+ * actor must keep at least this much population in reserve after paying the
+ * action's cost. Without the reserve, every power spends itself to the crisis
+ * line the moment it can barely afford to act, and the whole sector lives in
+ * perpetual famine — with it, campaigns open well-supplied and run several
+ * clashes before exhaustion forces the peace. Pressing a war already under way
+ * needs only bare affordability: momentum is spent, not husbanded.
+ */
+const ACTION_RESERVE = 30;
+
+/**
+ * Cycles a war must have run before a negotiated peace can close it, so a
+ * declared war is always a story — never "war broke out" answered by
+ * "exhausted by the fighting" a single cycle later.
+ */
+const PEACE_MIN_AGE = 6;
+
 // --- Engine state ------------------------------------------------------------
 
 /** A single faction action resolved during a tick. */
@@ -448,6 +565,18 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   // them. Both are keyed by the canonical pair key.
   const standing = new Map<string, number>();
   const pacts = new Map<string, PactKind>();
+  // The cycle each standing pact was struck (issue #39), so renunciation can be
+  // gated on a pact's age — every negotiated peace gets its era before it can fray.
+  const pactSince = new Map<string, number>();
+
+  // --- Destabilizer memory (issue #39) ---
+  // Per-faction count of troubled cycles (active crisis or defensive footing),
+  // climbing while the trouble is visible and bleeding away in quiet times; at
+  // SECESSION.unrest a great power becomes ripe to fracture.
+  const discontent = new Map<string, number>();
+  // Abandoned worlds lie fallow until the recorded cycle: no recolonization
+  // until the ruins have cooled, so a withdrawal is an era, not a flicker.
+  const fallowUntil = new Map<string, number>();
 
   // Each faction's current strategic footing, derived from circumstance each
   // cycle (issue #24). Everyone opens `steady` — acting on disposition — and
@@ -456,13 +585,22 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   // happens.
   const posture = new Map<string, Posture>();
 
-  const factionIds = Object.keys(world.factions).sort(byId);
-  for (const id of factionIds) {
+  /**
+   * Seed every per-faction ledger for `id`. Run for the founding roster below,
+   * and again for each rebel state a secession founds mid-run (issue #39) — a
+   * faction the engine tracks is always fully registered, however it arose.
+   */
+  const registerFaction = (id: string): void => {
     inCrisis.set(id, new Set());
     crisisHistory.set(id, { population: 0, energy: 0, materials: 0, influence: 0 });
     peakWorlds.set(id, world.factions[id].ownedWorldIds.length);
     posture.set(id, "steady");
-  }
+    discontent.set(id, 0);
+  };
+
+  // Every faction in the history, living or fallen — grows as rebel states arise.
+  const factionIds = Object.keys(world.factions).sort(byId);
+  for (const id of factionIds) registerFaction(id);
 
   /** Canonical, order-independent key for a faction pair. */
   const pairKey = (a: string, b: string): string =>
@@ -541,6 +679,10 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     let habitability = 0;
     let hazard = 0;
     for (const w of owned) {
+      // A held world is gradually tamed (issue #39): hazard heals a touch each
+      // cycle, so disaster scars fade over decades instead of compounding into
+      // permanent, sector-wide attrition.
+      w.hazard = clamp01(Math.max(0, w.hazard - DRIFT.hazardRecovery));
       energyYield += w.resourceRichness;
       materialYield += w.resourceRichness;
       habitability += w.habitability;
@@ -871,14 +1013,27 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         // only while it still hangs in the balance; a war one side is clearly
         // winning is pressed to a battlefield result, not negotiated away.
         if (atWar(a.id, b.id, tick)) {
-          const balanced = Math.abs(wars.get(key)?.momentum ?? 0) < WAR.peaceMomentum;
+          const war = wars.get(key);
+          const balanced = Math.abs(war?.momentum ?? 0) < WAR.peaceMomentum;
+          // A war must have run long enough to weary of (issue #39): no
+          // ceasefire one breath after the declaration.
+          const seasoned = tick - (war?.since ?? tick) >= PEACE_MIN_AGE;
           if (
             balanced &&
+            seasoned &&
             (isStrained(a) || isStrained(b)) &&
             rng.bool(DIPLOMACY.chance.peace)
           ) {
             pacts.set(key, "nonaggression");
+            pactSince.set(key, tick);
             adjustStanding(a.id, b.id, DIPLOMACY.standing.peace);
+            // The settlement lays the war's grievances down (issue #39): standing
+            // recovers to at least a wary floor, so the peace opens a real era
+            // rather than an instantly-renounceable truce over a raw feud.
+            standing.set(
+              key,
+              Math.max(standing.get(key) ?? 0, RENOUNCE.peaceFloor),
+            );
             ventTension(a.id, b.id);
             // Peace closes the war's arc: the front dissolves, momentum and all.
             wars.delete(key);
@@ -888,14 +1043,34 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         }
 
         // A pact binds the pair: it may deepen into alliance, and partners trade
-        // freely — even while rebuilding — which is how a peace recovers.
+        // freely — even while rebuilding — which is how a peace recovers. But a
+        // pact can also fray (issue #39): once it has aged past its honeymoon
+        // and relations have curdled to open rivalry, an aggressive power may
+        // renounce it outright — re-opening the war pressure the pact had
+        // stayed, so a settled peace can *end* rather than hold forever.
         if (pact) {
+          const age = tick - (pactSince.get(key) ?? 0);
           if (
+            age >= RENOUNCE.minAge &&
+            s <= RENOUNCE.standingAt &&
+            Math.max(aggressionOf(a), aggressionOf(b)) >= RENOUNCE.aggressorFloor &&
+            rng.bool(RENOUNCE.chance)
+          ) {
+            pacts.delete(key);
+            pactSince.delete(key);
+            adjustStanding(a.id, b.id, RENOUNCE.standingBlow);
+            tension.set(key, (tension.get(key) ?? 0) + RENOUNCE.tensionSurge);
+            // The dispatch names whoever had more appetite for the break.
+            const renouncer = aggressionOf(a) >= aggressionOf(b) ? a : b;
+            const other = renouncer === a ? b : a;
+            events.push(diplomacy(tick, "renounce", renouncer, other, where));
+          } else if (
             pact === "nonaggression" &&
             s >= RELATION.allianceAt &&
             rng.bool(DIPLOMACY.chance.alliance)
           ) {
             pacts.set(key, "alliance");
+            pactSince.set(key, tick);
             adjustStanding(a.id, b.id, DIPLOMACY.standing.alliance);
             events.push(diplomacy(tick, "alliance", a, b, where));
           } else if (rng.bool(DIPLOMACY.chance.trade)) {
@@ -910,10 +1085,12 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         // wary neutral; warm un-pacted neighbours may simply trade.
         if (s >= RELATION.allianceAt && rng.bool(DIPLOMACY.chance.alliance)) {
           pacts.set(key, "alliance");
+          pactSince.set(key, tick);
           adjustStanding(a.id, b.id, DIPLOMACY.standing.alliance);
           events.push(diplomacy(tick, "alliance", a, b, where));
         } else if (s >= RELATION.pactAt && rng.bool(DIPLOMACY.chance.pact)) {
           pacts.set(key, "nonaggression");
+          pactSince.set(key, tick);
           adjustStanding(a.id, b.id, DIPLOMACY.standing.pact);
           events.push(diplomacy(tick, "pact", a, b, where));
         } else if (
@@ -951,7 +1128,10 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     const targets: World[] = [];
     for (const sysId of [...reach].sort(byId)) {
       for (const wid of world.systems[sysId].worldIds) {
-        if (!owner.has(wid)) targets.push(world.worlds[wid]);
+        // A freshly abandoned world lies fallow for a spell (issue #39).
+        if (!owner.has(wid) && (fallowUntil.get(wid) ?? 0) <= currentTick) {
+          targets.push(world.worlds[wid]);
+        }
       }
     }
     targets.sort((a, b) => b.habitability - a.habitability || byId(a.id, b.id));
@@ -1103,27 +1283,143 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     return events;
   };
 
+  // --- Step 2f: internal fractures (issue #39) -------------------------------
+
+  /** Squared distance between two systems' map positions. */
+  const systemDistSq = (aId: string, bId: string): number => {
+    const a = world.systems[aId].position;
+    const b = world.systems[bId].position;
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return dx * dx + dy * dy;
+  };
+
+  /**
+   * Track each faction's discontent and let a long-troubled great power
+   * fracture: its outlying worlds break away as a new rebel faction, born
+   * hostile to the parent it split from. Discontent counts *visible* trouble —
+   * cycles spent in an active crisis or on a defensive footing — so a secession
+   * is traceable to dispatches the reader has already seen, and quiet cycles
+   * bleed it back down. The rupture itself moves borders without a war, founds
+   * a new power mid-history, and usually ignites one: parent and rebel part as
+   * rivals with war pressure already seeded.
+   */
+  const updateFractures = (tick: number): WorldEvent[] => {
+    const events: WorldEvent[] = [];
+    for (const faction of living()) {
+      if (faction.ownedWorldIds.length === 0) continue;
+      const troubled =
+        inCrisis.get(faction.id)!.size > 0 ||
+        posture.get(faction.id) === "defensive";
+      const level = troubled
+        ? (discontent.get(faction.id) ?? 0) + 1
+        : Math.max(0, (discontent.get(faction.id) ?? 0) - 1);
+      discontent.set(faction.id, level);
+
+      if (level < SECESSION.unrest) continue;
+      if (faction.ownedWorldIds.length < SECESSION.minWorlds) continue;
+      if (living().length >= SECESSION.maxFactions) continue;
+
+      // Only worlds beyond the home system can break away — the seat of power
+      // holds — farthest-flung first, where the capital's grip is weakest.
+      const candidates = faction.ownedWorldIds
+        .filter((wid) => world.worlds[wid].systemId !== faction.homeSystemId)
+        .sort(
+          (x, y) =>
+            systemDistSq(world.worlds[y].systemId, faction.homeSystemId) -
+              systemDistSq(world.worlds[x].systemId, faction.homeSystemId) ||
+            byId(x, y),
+        );
+      if (candidates.length === 0) continue;
+      if (!rng.bool(SECESSION.chance)) continue;
+
+      // The farthest third of the realm (at least one world) breaks away.
+      const count = Math.min(
+        candidates.length,
+        Math.ceil(faction.ownedWorldIds.length / 3),
+      );
+      const seized = new Set(candidates.slice(0, count));
+
+      const id = `fac-${factionIds.length}`;
+      const taken = new Set(factionIds.map((fid) => world.factions[fid].name));
+      const disposition = rng.pick(DISPOSITIONS);
+      const rebel: Faction = {
+        id,
+        name: generateFactionName(rng, taken),
+        homeSystemId: world.worlds[candidates[0]].systemId,
+        ownedWorldIds: [...seized],
+        resources: { population: 0, energy: 0, materials: 0, influence: 0 },
+        disposition,
+        leader: generateLeader(rng, disposition, tick),
+      };
+      // The rebels carry off a share of the realm's stockpiles in proportion
+      // to the territory they take.
+      const share = count / faction.ownedWorldIds.length;
+      for (const kind of RESOURCE_KINDS) {
+        const carried = Math.round(faction.resources[kind] * share);
+        rebel.resources[kind] = carried;
+        faction.resources[kind] -= carried;
+      }
+      faction.ownedWorldIds = faction.ownedWorldIds.filter(
+        (wid) => !seized.has(wid),
+      );
+      settleResources(faction);
+      settleResources(rebel);
+
+      world.factions[id] = rebel;
+      factionIds.push(id);
+      registerFaction(id);
+      discontent.set(faction.id, 0);
+
+      // Parent and rebel know each other from birth, and part as open rivals
+      // with war pressure already seeded — most ruptures come to blows.
+      const key = pairKey(faction.id, id);
+      met.add(key);
+      standing.set(key, clampStanding(SECESSION.standing));
+      tension.set(key, SECESSION.tension);
+
+      events.push(
+        factionSeceded(tick, rebel, faction, world.systems[rebel.homeSystemId], count),
+      );
+    }
+    return events;
+  };
+
   /** Choose this faction's single action, by disposition and circumstance. */
   const chooseAction = (
     faction: Faction,
     owner: Map<string, string>,
   ): { kind: ActionKind; target?: World; betrayal?: boolean } => {
     const r = faction.resources;
+    // An action of choice is taken from strength (issue #39): it must leave a
+    // population reserve, or the actor husbands its people instead.
+    const healthyFor = (cost: {
+      population?: number;
+      energy?: number;
+      materials?: number;
+    }): boolean =>
+      canAfford(faction, cost) &&
+      r.population - (cost.population ?? 0) >= ACTION_RESERVE;
     const colonize = colonizeTargets(faction, owner);
     const war = warTargets(faction, owner);
-    const canColonize = colonize.length > 0 && canAfford(faction, COST.colonize);
-    const canWar = war.length > 0 && canAfford(faction, COST.war);
+    const canColonize = colonize.length > 0 && healthyFor(COST.colonize);
+    const canWar = war.length > 0 && healthyFor(COST.war);
 
-    if (canAfford(faction, COST.war)) {
+    if (healthyFor(COST.war)) {
       // Boiling-over tension forces a strike even on a faction that would rather
       // rest — peace between rivals is temporary, not a permanent equilibrium.
       const grudge = tensionWarTarget(faction, owner);
       if (grudge) return { kind: "WAR", target: grudge };
+    }
+    if (canAfford(faction, COST.war)) {
       // A war already under way presses on under its own momentum, every cycle
-      // the aggressor can sustain it — so the front moves across cycles instead
-      // of stalling between fresh flare-ups (issue #24).
+      // the aggressor can sustain it — even past the reserve a fresh war would
+      // demand — so the front moves across cycles instead of stalling between
+      // fresh flare-ups (issue #24), and a campaign can bleed its aggressor.
       const press = activeWarTarget(faction, owner);
       if (press) return { kind: "WAR", target: press };
+    }
+    if (healthyFor(COST.war)) {
       // A soured pact may tempt an aggressor into an opportunistic betrayal.
       const mark = betrayalTarget(faction, owner);
       if (mark) return { kind: "WAR", target: mark, betrayal: true };
@@ -1150,14 +1446,19 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       return { kind: "CONSOLIDATE" };
     }
 
+    // Wars of choice ended with Phase 2 (issue #39): every war now needs a
+    // cause — boiling tension, a campaign already running, a betrayal, or a
+    // hegemon's drive for mastery, all handled above. Without one, even a
+    // militarist spends the peace rebuilding and expanding; its aggression
+    // still tells, because it boils tension over faster than anyone else. This
+    // is what gives the long run its rhythm of distinct wars and real peaces,
+    // rather than a perpetual brawl.
     switch (faction.disposition) {
       case "expansionist":
         if (canColonize) return { kind: "COLONIZE", target: colonize[0] };
-        if (canWar) return { kind: "WAR", target: war[0] };
         return { kind: "CONSOLIDATE" };
 
       case "militarist":
-        if (canWar) return { kind: "WAR", target: war[0] };
         if (canColonize) return { kind: "COLONIZE", target: colonize[0] };
         return { kind: "CONSOLIDATE" };
 
@@ -1196,12 +1497,41 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     const { kind, target, betrayal } = chooseAction(faction, owner);
 
     if (kind === "CONSOLIDATE") {
+      const events: WorldEvent[] = [];
+      // A strained power sprawled across several worlds may cut its losses
+      // (issue #39): abandoning its most marginal outlying world eases the
+      // strain of holding it — and returns the world to the unclaimed pool, so
+      // the frontier can re-open in a sector that long ago ran out of it.
+      if (
+        isStrained(faction) &&
+        faction.ownedWorldIds.length >= ABANDON.minWorlds
+      ) {
+        // The least worth keeping: poorest to live on and work, riskiest to
+        // hold. The home system is never abandoned — the seat of power holds.
+        const worth = (w: World): number =>
+          w.habitability + w.resourceRichness - w.hazard;
+        const marginal = faction.ownedWorldIds
+          .filter((wid) => world.worlds[wid].systemId !== faction.homeSystemId)
+          .sort(
+            (x, y) =>
+              worth(world.worlds[x]) - worth(world.worlds[y]) || byId(x, y),
+          )[0];
+        if (marginal !== undefined && rng.bool(ABANDON.chance)) {
+          faction.ownedWorldIds = faction.ownedWorldIds.filter(
+            (wid) => wid !== marginal,
+          );
+          owner.delete(marginal);
+          fallowUntil.set(marginal, tick + ABANDON.fallow);
+          events.push(worldAbandoned(tick, faction, world.worlds[marginal]));
+        }
+      }
       const r = faction.resources;
+      r.population += CONSOLIDATE_RECOVERY.population;
       r.energy += CONSOLIDATE_RECOVERY.energy;
       r.materials += CONSOLIDATE_RECOVERY.materials;
       r.influence += CONSOLIDATE_RECOVERY.influence;
       settleResources(faction);
-      return []; // recovery is quiet; the feed has livelier news to carry
+      return events; // recovery itself is quiet; only a withdrawal makes news
     }
 
     if (kind === "COLONIZE" && target) {
@@ -1220,6 +1550,7 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       // the broken word read before the assault it opens (issue #24).
       if (betrayal) {
         pacts.delete(pairKey(faction.id, defender.id));
+        pactSince.delete(pairKey(faction.id, defender.id));
         events.push(
           diplomacy(tick, "betrayal", faction, defender, world.systems[target.systemId]),
         );
@@ -1457,6 +1788,12 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     //     (issue #24): a battered power turns defensive, a dominant one hegemonic.
     //     Recomputed before actions so this cycle's choices act on the new footing.
     events.push(...updatePostures(t));
+
+    // 2f. Discontent accrues where trouble is visible, and a long-troubled
+    //     great power may fracture — a rebel successor state seceding with its
+    //     outlying worlds (issue #39). Runs before actions so a newborn rebel
+    //     acts (and can be acted upon) from its first full cycle.
+    events.push(...updateFractures(t));
 
     // 3. Each faction takes one action toward its goal. Ownership is tracked
     //    live so a world taken early in the tick is seen as held later in it.

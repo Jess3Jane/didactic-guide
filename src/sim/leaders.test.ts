@@ -108,6 +108,12 @@ describe("leadership turnover", () => {
     const seenSince = new Map<string, number>();
     for (let t = 1; t <= 200; t++) {
       for (const e of engine.tick()) {
+        // A rebel state founded mid-run (issue #39) seats its first leader at
+        // the secession, so tenures for that faction count from there.
+        if (e.type === "FACTION_SECEDED") {
+          seenSince.set(e.actors[0].id, t);
+          continue;
+        }
         if (e.type !== "LEADERSHIP_CHANGE") continue;
         const faction = engine.sector.factions[e.actors[0].id];
         // The live leader matches the dispatch's named successor, dated to now.

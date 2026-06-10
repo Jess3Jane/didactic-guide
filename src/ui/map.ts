@@ -246,6 +246,12 @@ export function createSectorMap(): SectorMap {
   const update = (): void => {
     if (!sector) return;
 
+    // Reassign colours each repaint: a secession (issue #39) can found a new
+    // faction mid-run, and it needs a swatch the moment it appears. Founding
+    // factions keep their colours — assignment follows insertion order, and
+    // newcomers only ever append.
+    colors = factionColors(sector);
+
     // Recolour each system and refresh its tooltip + contested ring.
     for (const system of Object.values(sector.systems)) {
       const circle = nodeEls.get(system.id);

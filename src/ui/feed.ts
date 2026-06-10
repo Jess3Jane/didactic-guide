@@ -81,12 +81,18 @@ interface DispatchMeta {
 const TYPE_META: Record<WorldEventType, DispatchMeta> = {
   FACTION_FOUNDED: { kind: "Founding", category: "founding" },
   WORLD_COLONIZED: { kind: "Colonization", category: "expansion" },
+  // A withdrawal is the territorial inverse of a colonization, so it filters
+  // with Expansion (the map-changing settlement axis) but reads as distress.
+  WORLD_ABANDONED: { kind: "Withdrawal", category: "expansion", accent: "crisis" },
   WAR_DECLARED: { kind: "War Declared", category: "conflict" },
   CONFLICT: { kind: "Conflict", category: "conflict" },
   WAR_ENDED: { kind: "War's End", category: "conflict" },
   RESOURCE_CRISIS: { kind: "Crisis", category: "crisis" },
   FIRST_CONTACT: { kind: "First Contact", category: "contact" },
   FACTION_COLLAPSED: { kind: "Collapse", category: "collapse" },
+  // A secession founds a new power, so it files with Foundings; the rupture it
+  // tears in the parent wears the collapse accent rather than founding gold.
+  FACTION_SECEDED: { kind: "Secession", category: "founding", accent: "collapse" },
   // Placeholder; WORLD_FORTUNE's label + colour vary by its fortune kind and
   // are resolved per-event in `toDispatch`, not from this static table.
   WORLD_FORTUNE: { kind: "Fortune", category: "crisis" },
@@ -134,6 +140,9 @@ const DIPLOMACY_META: Record<DiplomacyKind, DispatchMeta> = {
   trade: { kind: "Trade", category: "diplomacy" },
   threat: { kind: "Ultimatum", category: "conflict" },
   betrayal: { kind: "Betrayal", category: "conflict" },
+  // A renunciation re-opens the road to war (issue #39), so like a threat or
+  // betrayal it files — and reads — as a hostile turn.
+  renounce: { kind: "Renunciation", category: "conflict" },
 };
 
 /**

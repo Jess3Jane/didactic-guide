@@ -34,17 +34,22 @@ import type { PostureShift } from "./posture";
  * `SECTOR_CONCLUDED` (issue #22), `DIPLOMACY` (issue #24) — the political beats
  * between powers — and the `WAR_DECLARED`/`WAR_ENDED` bookends (issue #24) that
  * frame a multi-cycle war as one arc: declared, fought across many clashes, and
- * brought to a decisive end.
+ * brought to a decisive end. Phase 3 adds the destabilizers (issue #39):
+ * `FACTION_SECEDED` — a troubled power fracturing into a rebel successor state —
+ * and `WORLD_ABANDONED` — a strained power returning a world to the unclaimed
+ * pool, re-opening the frontier.
  */
 export type WorldEventType =
   | "FACTION_FOUNDED"
   | "WORLD_COLONIZED"
+  | "WORLD_ABANDONED"
   | "WAR_DECLARED"
   | "CONFLICT"
   | "WAR_ENDED"
   | "RESOURCE_CRISIS"
   | "FIRST_CONTACT"
   | "FACTION_COLLAPSED"
+  | "FACTION_SECEDED"
   | "WORLD_FORTUNE"
   | "LEADERSHIP_CHANGE"
   | "DIPLOMACY"
@@ -81,8 +86,9 @@ export type LeadershipChange = "succession" | "coup" | "ascension";
  * pact; `alliance` — a warmer bond formed or upgraded into; `peace` — a war
  * laid down; `trade` — an accord that enriches both and warms relations;
  * `threat` — coercion that sours them toward rivalry; `betrayal` — a standing
- * pact broken in the act of attacking. Each reads as a distinct beat in the
- * chronicle's politics.
+ * pact broken in the act of attacking; `renounce` (issue #39) — a long-soured
+ * pact cast off openly, short of an attack but re-opening the road to war. Each
+ * reads as a distinct beat in the chronicle's politics.
  */
 export type DiplomacyKind =
   | "pact"
@@ -90,7 +96,8 @@ export type DiplomacyKind =
   | "peace"
   | "trade"
   | "threat"
-  | "betrayal";
+  | "betrayal"
+  | "renounce";
 
 /**
  * How a clash sat within its multi-cycle war (issue #24). A war is fought as a
@@ -156,6 +163,16 @@ export interface FactionFoundedEvent extends EventBase {
 /** A faction expands onto a previously unheld world, at its leader's command. */
 export interface WorldColonizedEvent extends EventBase {
   type: "WORLD_COLONIZED";
+  data: { leader: LeaderRef };
+}
+
+/**
+ * A strained faction withdraws from a world it can no longer hold (issue #39),
+ * returning it to the unclaimed pool — so the frontier, long since claimed up,
+ * can re-open and colonization can return to a settled sector.
+ */
+export interface WorldAbandonedEvent extends EventBase {
+  type: "WORLD_ABANDONED";
   data: { leader: LeaderRef };
 }
 
@@ -240,6 +257,17 @@ export interface FactionCollapsedEvent extends EventBase {
   data: { peakWorlds: number };
 }
 
+/**
+ * A troubled power fractures (issue #39): its outlying worlds break away as a
+ * new rebel faction. `actors[0]` is the rebel state, led by `leader`;
+ * `actors[1]` the parent it broke from. `location` is the rebel's new seat, and
+ * `worlds` how many it carried off — so the rupture reads with due weight.
+ */
+export interface FactionSecededEvent extends EventBase {
+  type: "FACTION_SECEDED";
+  data: { disposition: Disposition; leader: LeaderRef; worlds: number };
+}
+
 /** A world's environment turns — a discovery, depletion, or disaster. */
 export interface WorldFortuneEvent extends EventBase {
   type: "WORLD_FORTUNE";
@@ -299,12 +327,14 @@ export interface SectorConcludedEvent extends EventBase {
 export type WorldEvent =
   | FactionFoundedEvent
   | WorldColonizedEvent
+  | WorldAbandonedEvent
   | WarDeclaredEvent
   | ConflictEvent
   | WarEndedEvent
   | ResourceCrisisEvent
   | FirstContactEvent
   | FactionCollapsedEvent
+  | FactionSecededEvent
   | WorldFortuneEvent
   | LeadershipChangeEvent
   | DiplomacyEvent
@@ -315,12 +345,14 @@ export type WorldEvent =
 export const EVENT_TYPES: readonly WorldEventType[] = [
   "FACTION_FOUNDED",
   "WORLD_COLONIZED",
+  "WORLD_ABANDONED",
   "WAR_DECLARED",
   "CONFLICT",
   "WAR_ENDED",
   "RESOURCE_CRISIS",
   "FIRST_CONTACT",
   "FACTION_COLLAPSED",
+  "FACTION_SECEDED",
   "WORLD_FORTUNE",
   "LEADERSHIP_CHANGE",
   "DIPLOMACY",
@@ -476,6 +508,17 @@ export function describe(event: WorldEvent): string {
       ])();
     }
 
+    case "WORLD_ABANDONED": {
+      const f = event.actors[0].name;
+      const world = event.location?.name ?? "a far colony";
+      const lead = styled(event.data.leader);
+      return pickVariant(event, [
+        () => `Stretched past its means, the ${f} abandoned ${world} to the silence.`,
+        () => `The ${f} withdrew from ${world}, its colonists recalled and its claim lapsed.`,
+        () => `${lead} ordered ${world} evacuated; the ${f} could hold it no longer.`,
+      ])();
+    }
+
     case "CONFLICT": {
       const a = event.actors[0].name;
       const d = event.actors[1].name;
@@ -592,6 +635,20 @@ export function describe(event: WorldEvent): string {
       return pickVariant(event, variants)();
     }
 
+    case "FACTION_SECEDED": {
+      const rebel = event.actors[0].name;
+      const parent = event.actors[1].name;
+      const lead = styled(event.data.leader);
+      const n = event.data.worlds;
+      const span = n === 1 ? "an outlying world" : `${n} outlying worlds`;
+      const seat = event.location ? `, seated at ${event.location.name}` : "";
+      return pickVariant(event, [
+        () => `Years of unrest split the ${parent}: ${span} broke away as the ${rebel}, under ${lead}${seat}.`,
+        () => `The ${parent} fractured — ${lead} led ${span} into secession, proclaiming the ${rebel}${seat}.`,
+        () => `Rebellion carved the ${rebel} from the ${parent}, ${span} rallying to ${lead}${seat}.`,
+      ])();
+    }
+
     case "WORLD_FORTUNE": {
       const faction = event.actors[0];
       const world = event.location?.name ?? "a frontier world";
@@ -678,6 +735,11 @@ export function describe(event: WorldEvent): string {
           () => `Breaking its pact, the ${a} turned on the ${b}${where}.`,
           () => `${lead} of the ${a} cast aside its word and struck the ${b}.`,
           () => `Treachery: the ${a} shattered its pact and fell upon the ${b}.`,
+        ],
+        renounce: [
+          () => `${lead} of the ${a} renounced its pact with the ${b}${where}.`,
+          () => `The ${a} cast off its treaty with the ${b}, and the old rancor returned.`,
+          () => `Done with diplomacy, the ${a} let its pact with the ${b} lapse into hostility.`,
         ],
       };
       return pickVariant(event, byKind[event.data.kind])();
@@ -772,6 +834,21 @@ export function worldColonized(
 ): WorldColonizedEvent {
   return withSummary<WorldColonizedEvent>({
     type: "WORLD_COLONIZED",
+    tick,
+    actors: [ref(faction)],
+    location: ref(world),
+    data: { leader: leaderRef(faction.leader) },
+  });
+}
+
+/** A faction withdraws from `world` (issue #39), returning it to the unclaimed pool. */
+export function worldAbandoned(
+  tick: number,
+  faction: Faction,
+  world: World,
+): WorldAbandonedEvent {
+  return withSummary<WorldAbandonedEvent>({
+    type: "WORLD_ABANDONED",
     tick,
     actors: [ref(faction)],
     location: ref(world),
@@ -897,6 +974,31 @@ export function factionCollapsed(
     tick,
     actors: [ref(faction)],
     data: { peakWorlds },
+  });
+}
+
+/**
+ * A rebel state secedes from its parent (issue #39). `rebel` is the new
+ * faction (install its leader and worlds before calling); `worlds` (default:
+ * its current holdings) is how many it carried off, and `homeSystem` its seat.
+ */
+export function factionSeceded(
+  tick: number,
+  rebel: Faction,
+  parent: Faction,
+  homeSystem?: StarSystem,
+  worlds = rebel.ownedWorldIds.length,
+): FactionSecededEvent {
+  return withSummary<FactionSecededEvent>({
+    type: "FACTION_SECEDED",
+    tick,
+    actors: [ref(rebel), ref(parent)],
+    location: homeSystem ? ref(homeSystem) : undefined,
+    data: {
+      disposition: rebel.disposition,
+      leader: leaderRef(rebel.leader),
+      worlds,
+    },
   });
 }
 
