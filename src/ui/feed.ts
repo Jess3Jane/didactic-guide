@@ -10,7 +10,11 @@
 //      category, prose). No DOM, so it unit-tests in plain Node.
 //   2. `createFeed` — a small stateful component that renders dispatches into
 //      the DOM, newest first, capping how many it keeps so a long run stays
-//      responsive.
+//      responsive. It also owns the feed's *filters* (issue #26): a long,
+//      sustained history stays navigable when the viewer can narrow it to one
+//      faction and/or one kind of event. Filtering is a pure view concern over
+//      the same stream — dispatches are never dropped, only shown or hidden —
+//      so it lives here rather than in the engine.
 
 import type {
   DiplomacyKind,
@@ -22,9 +26,10 @@ import type {
 // --- View model --------------------------------------------------------------
 
 /**
- * A broad category per event type, used only for styling (a colour accent on
- * the dispatch). Kept separate from `WorldEventType` so the palette can stay
- * coarse even as the event vocabulary grows.
+ * A broad category per event type, used both for styling (a colour accent on
+ * the dispatch) and as the "event type" axis of the feed filter (issue #26).
+ * Kept separate from `WorldEventType` so the palette — and the filter — can
+ * stay coarse and legible even as the event vocabulary grows.
  */
 export type DispatchCategory =
   | "founding"
@@ -102,6 +107,36 @@ const DIPLOMACY_META: Record<
 };
 
 /**
+ * The categories the event-type filter offers, in a stable, curated order, with
+ * a viewer-facing label for each. The dropdown only ever lists a category once
+ * it has actually appeared this run (see `createFeed`), so an empty sector shows
+ * no spurious filters — but when it does list them, this fixes their order.
+ */
+const CATEGORY_ORDER: readonly DispatchCategory[] = [
+  "founding",
+  "expansion",
+  "conflict",
+  "crisis",
+  "contact",
+  "collapse",
+  "leadership",
+  "diplomacy",
+  "conclusion",
+];
+
+const CATEGORY_FILTER_LABEL: Record<DispatchCategory, string> = {
+  founding: "Foundings",
+  expansion: "Expansion",
+  conflict: "Conflict",
+  crisis: "Crises",
+  contact: "First Contact",
+  collapse: "Collapse",
+  leadership: "Leadership",
+  diplomacy: "Diplomacy",
+  conclusion: "Epilogue",
+};
+
+/**
  * Project a `WorldEvent` onto its render-ready `Dispatch`.
  *
  * Pure and DOM-free: it only reads fields the event already carries (including
@@ -149,13 +184,18 @@ export interface Feed {
   push(events: readonly WorldEvent[]): void;
   /** Replace the feed's contents, optionally seeding it with `events`. */
   reset(events?: readonly WorldEvent[]): void;
-  /** How many dispatches are currently in the DOM. */
+  /** How many dispatches are currently in the DOM (regardless of filters). */
   size(): number;
 }
 
 const DEFAULT_MAX_ENTRIES = 300;
 
-/** Build the DOM node for a single dispatch. */
+/**
+ * Build the DOM node for a single dispatch.
+ *
+ * The faction and category are also stamped onto `data-` attributes so the
+ * filter can show/hide an existing dispatch without re-deriving its tags.
+ */
 function renderDispatch(doc: Document, d: Dispatch): HTMLElement {
   const article = doc.createElement("article");
   article.className = `dispatch dispatch--${d.category}`;
@@ -164,6 +204,8 @@ function renderDispatch(doc: Document, d: Dispatch): HTMLElement {
     "aria-label",
     `Cycle ${d.cycle}, ${d.kind}: ${d.summary}`,
   );
+  article.dataset.category = d.category;
+  if (d.faction) article.dataset.faction = d.faction;
 
   const meta = doc.createElement("header");
   meta.className = "dispatch__meta";
@@ -216,39 +258,189 @@ export function createFeed(options: FeedOptions = {}): Feed {
   element.setAttribute("aria-label", "World chronicle");
   element.setAttribute("aria-busy", "false");
 
+  // --- Filter bar (issue #26) -----------------------------------------------
+  //
+  // Two axes — faction and event type — each a `<select>` that starts on "all"
+  // and only grows options the run has actually produced, so the controls match
+  // the chronicle in front of you. A Clear button and a live "showing N of M"
+  // count make the active filter obvious and reversible.
+
+  const filters = doc.createElement("div");
+  filters.className = "feed__filters";
+  filters.setAttribute("role", "group");
+  filters.setAttribute("aria-label", "Filter the chronicle");
+
+  const factionSelect = doc.createElement("select");
+  factionSelect.className = "feed__filter feed__filter--faction";
+  factionSelect.setAttribute("aria-label", "Filter by faction");
+
+  const typeSelect = doc.createElement("select");
+  typeSelect.className = "feed__filter feed__filter--type";
+  typeSelect.setAttribute("aria-label", "Filter by event type");
+
+  const count = doc.createElement("span");
+  count.className = "feed__filter-count";
+  count.setAttribute("role", "status");
+  count.setAttribute("aria-live", "polite");
+  count.hidden = true;
+
+  const clearButton = doc.createElement("button");
+  clearButton.type = "button";
+  clearButton.className = "feed__filter-clear";
+  clearButton.textContent = "Clear filters";
+  clearButton.hidden = true;
+
+  filters.append(factionSelect, typeSelect, count, clearButton);
+  element.append(filters);
+
   // Shown only while the feed is empty; removed as soon as events arrive.
   const empty = doc.createElement("p");
   empty.className = "feed__empty";
   empty.textContent = "No dispatches yet — generate a sector and press play.";
   element.append(empty);
 
-  const hasDispatches = (): boolean =>
-    element.querySelector(".dispatch") !== null;
+  // Shown when the feed holds dispatches but the active filter hides them all —
+  // a distinct, reassuring "nothing here *under this filter*" rather than the
+  // cold "nothing has happened yet" of the empty state above.
+  const filteredEmpty = doc.createElement("p");
+  filteredEmpty.className = "feed__empty feed__empty--filtered";
+  filteredEmpty.textContent = "No dispatches match the current filter.";
 
+  // The filter vocabulary seen so far this run. Factions are listed
+  // alphabetically; categories follow `CATEGORY_ORDER`.
+  const knownFactions = new Set<string>();
+  const knownCategories = new Set<DispatchCategory>();
+
+  const allDispatches = (): NodeListOf<Element> =>
+    element.querySelectorAll(".dispatch");
+  const visibleCount = (): number =>
+    element.querySelectorAll(".dispatch:not([hidden])").length;
+
+  const isFiltering = (): boolean =>
+    factionSelect.value !== "" || typeSelect.value !== "";
+
+  /** Does a dispatch with this faction/category pass the active filter? */
+  const matches = (
+    faction: string | undefined,
+    category: string,
+  ): boolean => {
+    if (factionSelect.value && faction !== factionSelect.value) return false;
+    if (typeSelect.value && category !== typeSelect.value) return false;
+    return true;
+  };
+
+  /** Rebuild a `<select>`'s options, preserving the current selection. */
+  const fillSelect = (
+    select: HTMLSelectElement,
+    allLabel: string,
+    values: readonly string[],
+    labelOf: (value: string) => string,
+  ): void => {
+    const current = select.value;
+    select.textContent = "";
+    const all = doc.createElement("option");
+    all.value = "";
+    all.textContent = allLabel;
+    select.append(all);
+    for (const value of values) {
+      const option = doc.createElement("option");
+      option.value = value;
+      option.textContent = labelOf(value);
+      select.append(option);
+    }
+    // Selection survives because options only ever accrete, never disappear.
+    select.value = current;
+  };
+
+  const rebuildFilters = (): void => {
+    const factions = [...knownFactions].sort((a, b) => a.localeCompare(b));
+    fillSelect(factionSelect, "All factions", factions, (f) => f);
+    const categories = CATEGORY_ORDER.filter((c) => knownCategories.has(c));
+    fillSelect(typeSelect, "All events", categories, (c) =>
+      CATEGORY_FILTER_LABEL[c as DispatchCategory],
+    );
+  };
+
+  /** Reflect filter state: active styling, the Clear button, and the count. */
+  const syncFilterUI = (): void => {
+    const filtering = isFiltering();
+    filters.classList.toggle("feed__filters--active", filtering);
+    clearButton.hidden = !filtering;
+    if (filtering) {
+      count.textContent = `Showing ${visibleCount()} of ${allDispatches().length}`;
+      count.hidden = false;
+    } else {
+      count.textContent = "";
+      count.hidden = true;
+    }
+  };
+
+  /** Show the right placeholder: none, empty, or "filtered to nothing". */
   const syncEmpty = (): void => {
-    const present = hasDispatches();
-    empty.hidden = present;
-    if (present && empty.parentElement) empty.remove();
-    else if (!present && !empty.parentElement) element.append(empty);
+    const total = allDispatches().length;
+    const showEmpty = total === 0;
+    if (showEmpty && !empty.parentElement) element.append(empty);
+    else if (!showEmpty && empty.parentElement) empty.remove();
+
+    const showFiltered = total > 0 && visibleCount() === 0;
+    if (showFiltered && !filteredEmpty.parentElement) {
+      element.append(filteredEmpty);
+    } else if (!showFiltered && filteredEmpty.parentElement) {
+      filteredEmpty.remove();
+    }
+  };
+
+  /** Apply the active filter to every dispatch already in the DOM. */
+  const applyFilters = (): void => {
+    for (const node of allDispatches()) {
+      const el = node as HTMLElement;
+      el.hidden = !matches(el.dataset.faction || undefined, el.dataset.category ?? "");
+    }
+    syncEmpty();
+    syncFilterUI();
   };
 
   /** Drop oldest dispatches (bottom of the feed) past the cap. */
   const trim = (): void => {
-    while (element.querySelectorAll(".dispatch").length > maxEntries) {
-      element.lastElementChild?.remove();
+    let dispatches = allDispatches();
+    while (dispatches.length > maxEntries) {
+      dispatches[dispatches.length - 1].remove();
+      dispatches = allDispatches();
     }
   };
 
   const push = (events: readonly WorldEvent[]): void => {
     if (events.length === 0) return;
 
+    // Project once; the dispatches drive both the filter vocabulary and the DOM.
+    const dispatches = events.map(toDispatch);
+
+    // Grow the filter dropdowns to cover any faction/category new this batch, so
+    // the controls always offer exactly what the chronicle contains.
+    let vocabularyGrew = false;
+    for (const d of dispatches) {
+      if (d.faction && !knownFactions.has(d.faction)) {
+        knownFactions.add(d.faction);
+        vocabularyGrew = true;
+      }
+      if (!knownCategories.has(d.category)) {
+        knownCategories.add(d.category);
+        vocabularyGrew = true;
+      }
+    }
+    if (vocabularyGrew) rebuildFilters();
+
     // Build the batch newest-first into a fragment, then splice it above the
     // current top in one DOM write. Reversing here means that within a single
     // tick the last-emitted event reads first, matching reverse-chronological
-    // order at finer-than-tick granularity.
+    // order at finer-than-tick granularity. New dispatches honour the active
+    // filter at birth, so a live run never flashes a hidden one into view.
     const fragment = doc.createDocumentFragment();
-    for (let i = events.length - 1; i >= 0; i--) {
-      fragment.append(renderDispatch(doc, toDispatch(events[i])));
+    for (let i = dispatches.length - 1; i >= 0; i--) {
+      const d = dispatches[i];
+      const node = renderDispatch(doc, d);
+      node.hidden = !matches(d.faction, d.category);
+      fragment.append(node);
     }
 
     const firstDispatch = element.querySelector(".dispatch");
@@ -257,17 +449,37 @@ export function createFeed(options: FeedOptions = {}): Feed {
 
     trim();
     syncEmpty();
+    syncFilterUI();
   };
 
   const reset = (events: readonly WorldEvent[] = []): void => {
-    for (const node of [...element.querySelectorAll(".dispatch")]) {
+    for (const node of [...allDispatches()]) {
       node.remove();
     }
+    // A fresh sector starts a fresh vocabulary: drop the old factions/categories
+    // and return to the unfiltered view before reseeding.
+    knownFactions.clear();
+    knownCategories.clear();
+    factionSelect.value = "";
+    typeSelect.value = "";
+    rebuildFilters();
     syncEmpty();
+    syncFilterUI();
     push(events);
   };
 
-  const size = (): number => element.querySelectorAll(".dispatch").length;
+  const size = (): number => allDispatches().length;
+
+  factionSelect.addEventListener("change", applyFilters);
+  typeSelect.addEventListener("change", applyFilters);
+  clearButton.addEventListener("click", () => {
+    factionSelect.value = "";
+    typeSelect.value = "";
+    applyFilters();
+  });
+
+  rebuildFilters();
+  syncFilterUI();
 
   return { element, push, reset, size };
 }

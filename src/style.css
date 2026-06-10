@@ -439,6 +439,73 @@ body {
   gap: 0.75rem;
 }
 
+/* --- Filter bar (issue #26) ---------------------------------------------- */
+
+.feed__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+}
+
+/* When a filter is set, lift the bar with the accent so it reads as "active". */
+.feed__filters--active {
+  border-color: var(--accent);
+}
+
+.feed__filter {
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--fg);
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  cursor: pointer;
+}
+
+.feed__filter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.feed__filter-count {
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+.feed__filter-clear {
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--fg);
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.feed__filter-clear:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.feed__filter-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .feed__empty {
   color: var(--fg-dim);
   font-style: italic;
