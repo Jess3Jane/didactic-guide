@@ -6,10 +6,10 @@ sustains") before scoping Phase 3. Same shape as the Phase 1 worksheet:
 observed findings** from real playthroughs so you can calibrate and reach your
 own verdict.
 
-The scorecard is **pre-filled with strawman scores** from two full runs (seeds
-`tinotol` to cycle 400+ and `fecenuw` to cycle 400) plus the test suite —
-argue with them, don't trust them. Phase 1 owner scores are shown alongside so
-you can see claimed movement.
+The scorecard was pre-filled with **strawman scores** from two full runs (seeds
+`tinotol` to cycle 400+ and `fecenuw` to cycle 400) plus the test suite. The
+**owner's actual verdict** (Jess3Jane, from a run on seed `cuxojos`) has since
+been folded in via PR #37 review — where they diverge, the owner's read governs.
 
 Test against the deployed site (GitHub Pages) or `npm run dev` locally.
 
@@ -29,34 +29,50 @@ weight them double when totalling A–J.
 
 ## 1. Scorecard
 
-| # | Dimension | Your score | Your note | Strawman | Phase 1 (yours) |
-|---|-----------|:----------:|-----------|:--------:|:---------------:|
-| A | **Emergence** (core pillar) | | | 3 | 2 |
-| B | **Readable history** (core pillar) | | | 4 | 3 |
-| C | **Deterministic & shareable** (core pillar) | | | 4 | 4 |
-| D | Pacing & longevity | | | 3 | 1 |
-| E | First-run experience | | | 4 | 3 |
-| F | Controls & feedback | | | 4 | 2 |
-| G | Variety of event types | | | 4 | 3 |
-| H | Visual design & polish | | | 4 | 4 |
-| I | Stability & performance | | | 4 | 4 |
-| J | Vision alignment | | | 3 | 2 |
+| # | Dimension | Score | Owner's note | Strawman | Phase 1 (owner) |
+|---|-----------|:-----:|--------------|:--------:|:---------------:|
+| A | **Emergence** (core pillar) | **3** | second-act test: "0 map changes, one peaceful leadership change. so almost all economic" | 3 | 2 |
+| B | **Readable history** (core pillar) | **3** | "but improved" / "prose is much more interesting" | 4 | 3 |
+| C | **Deterministic & shareable** (core pillar) | **4** | reproduces | 4 | 4 |
+| D | Pacing & longevity | **3** | sustains, but the long tail is economic static | 3 | 1 |
+| E | First-run experience | **4** | cold open "looks reasonable" | 4 | 3 |
+| F | Controls & feedback | **3** | controls sweep "works" | 4 | 2 |
+| G | Variety of event types | **3** | — | 4 | 3 |
+| H | Visual design & polish | **4** | map "fairly clear to read but lacks some contrast"; "reasonable at phone width" | 4 | 4 |
+| I | Stability & performance | **4** | "console clean, still performant, feed caps" | 4 | 4 |
+| J | Vision alignment | **4** | — | 3 | 2 |
 
-**Strawman total: 37 / 50** (unweighted) · **48 / 65** (pillars ×2)
-&nbsp;&nbsp;·&nbsp;&nbsp; *(your Phase 1 verdict was 28 / 50 · 37 / 65)*
+**Owner total: 35 / 50** (unweighted) · **45 / 65** (pillars A,B,C ×2)
+&nbsp;&nbsp;·&nbsp;&nbsp; *(Phase 1 owner verdict was 28 / 50 · 37 / 65 — up 7 points; strawman
+claimed 37 / 50 · 48 / 65, so the owner is again a touch harsher, mainly on
+prose, controls, and variety.)*
 
 ### New-in-Phase-2 features (scored separately, unweighted)
 
-| # | Feature | Your score | Your note | Strawman |
-|---|---------|:----------:|-----------|:--------:|
-| K | Sector map | | | 4 |
-| L | Feed filtering | | | 4 |
-| M | Named leaders & characters | | | 3 |
-| N | Wars, diplomacy & faction postures | | | 3 |
+The owner annotated these in prose rather than scoring them; notes below.
 
-**Strawman: 14 / 20**
+| # | Feature | Owner's note | Strawman |
+|---|---------|--------------|:--------:|
+| K | Sector map | "a good addition, fairly clear to read but lacks some contrast"; **"two planets (3?) overlap on the map"** | 4 |
+| L | Feed filtering | "Mostly functional, **conflict sometimes misses things**" | 4 |
+| M | Named leaders & characters | "set dressing, as far as i can tell. causes are reasonable at least, **though sometimes lack basis**" | 3 |
+| N | Wars, diplomacy & faction postures | opening-act arcs cohere: "Mostly!"; map-over-time "Works"; but see the second-act finding | 3 |
 
-### The strawman verdict in one breath
+### The verdict in one breath
+
+The owner's run (seed `cuxojos`) **confirmed the strawman's central finding
+independently**: at cycle 200+, the 20 most recent dispatches contained
+*"0 map changes, one peaceful leadership change — so almost all economic."*
+Determinism holds ("yes"), seeds diverge ("differently"), the sim stays
+performant with a capped feed and a clean console. Phase 2's mandate — sustain
+the simulation and connect events into arcs — landed (28→35, every Phase 1
+failing score improved), but prose, variety, and emergence all cap at 3 for
+the same reason: the history has no second act. The owner also surfaced three
+defects the strawman missed or underweighted: **the Conflict filter sometimes
+misses events**, **planets overlap on the map** (plus thin contrast), and
+**leadership changes sometimes lack visible basis**.
+
+### The strawman verdict in one breath (kept for the record)
 
 Phase 1 died of silence; Phase 2 lives forever but **stops happening.** The
 sub-30s fizzle is genuinely dead — runs sustain past cycle 400 with a clean
@@ -167,34 +183,38 @@ tests, 14 files, all green).
 - Crises (famine) appeared only in the opening act, never again — the
   economy seems to settle into permanent comfortable equilibrium.
 
-## 4. Phase 3 priority candidates (pending your verdict)
+## 4. Phase 3 priorities (from the owner's verdict)
 
-Ordered by how directly they answer the capped scores. To be turned into the
-Phase 3 issue backlog once the owner's scorecard lands.
+Phase 3's mandate, in one line: **give the history a second act.** Ordered by
+how directly they answer the capped scores (A=3, B=3, D=3, G=3, F=3) and the
+owner's defect reports. These seed the Phase 3 issue backlog.
 
-### Tier 1 — give history a second act (A, D, J)
+### Tier 1 — give history a second act (A, D, J, G)
 
 1. **Late-game destabilizers.** Once the sector settles, *something* must
    re-light it: postures that actually tip back to expansion/aggression,
    resource scarcity that forces conflict, succession disputes, rebellions,
    new factions rising from collapsed ones. A 400-cycle run should contain
-   several distinct eras, not one.
-2. **Dampen the economic static.** Aggregate or rate-limit
+   several distinct eras — and the map should keep changing hands outside
+   the opening (conquest, secession, recolonization of fallen worlds).
+2. **Tame the economic static (B, G).** Aggregate or rate-limit
    discovery/depletion/disaster noise; give trade memory (renewals,
-   escalation to pacts, breakdowns) so repeated relations *go somewhere*.
-3. **Let the map keep moving.** Borders should change hands outside the
-   opening — conquest, secession, recolonization of fallen factions' worlds.
+   escalation to pacts, breakdowns) so repeated relations *go somewhere*
+   instead of the same accord being re-signed ~27 times.
 
-### Tier 2 — deepen what works
+### Tier 2 — deepen what works, fix what the review caught
 
-4. **Leaders with agency**: ambitions, rivalries, coups — make people the
-   *cause* of mid-game destabilization, not just dateline decoration. Fix
-   founding-name collisions.
-5. **Era/chapter framing in the feed**: surface the arcs the engine already
-   tracks (war names, faction rise-and-fall) as headers or recap dispatches.
+3. **Leaders with agency (M, A).** "Set dressing, as far as i can tell" —
+   give leaders ambitions, rivalries, coups; make successions have visible
+   basis ("causes… sometimes lack basis"); fix founding surname collisions.
+4. **Conflict filter misses events (L, bug).** Audit the event-type →
+   filter-category mapping so every war/diplomacy dispatch lands in a
+   category the filter actually catches.
+5. **Map polish (K, H).** De-overlap co-located systems, raise contrast on
+   ownership colors and lanes.
 
-### Tier 3 — roadmapped (GDD Phase 3)
+### Tier 3 — roadmapped (GDD §7 Phase 3)
 
 6. **URL seed-sharing** — a seed in the URL makes "share a history" real.
 7. **World/faction detail views** — click a map node or faction name for a
-   dossier.
+   dossier built from the same history.
