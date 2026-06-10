@@ -14,6 +14,7 @@ import {
   diplomacy,
   warDeclared,
   warEnded,
+  factionDoctrine,
   sectorConcluded,
   type DiplomacyKind,
   type FortuneKind,
@@ -208,6 +209,7 @@ group("describe", () => {
       diplomacy(8, "alliance", helion, iron, aldebaran),
       warDeclared(8, iron, helion, aldebaran),
       warEnded(9, iron, helion, "conquest", 3, 4),
+      factionDoctrine(9, helion, "hegemonic", aldebaran),
       sectorConcluded(8, "unified", helion),
     ];
     // One sample per declared type, and each reads as a finished sentence.

@@ -22,6 +22,7 @@ import type {
   WorldEvent,
   WorldEventType,
 } from "../sim/events";
+import type { PostureShift } from "../sim/posture";
 
 // --- View model --------------------------------------------------------------
 
@@ -39,6 +40,7 @@ export type DispatchCategory =
   | "contact"
   | "collapse"
   | "leadership"
+  | "doctrine"
   | "diplomacy"
   | "conclusion";
 
@@ -78,7 +80,20 @@ const TYPE_META: Record<
   // Placeholder; DIPLOMACY's label + colour vary by its kind and are resolved
   // per-event in `toDispatch`, not from this static table.
   DIPLOMACY: { kind: "Diplomacy", category: "diplomacy" },
+  // Placeholder; FACTION_DOCTRINE's label varies by its shift (defensive vs.
+  // hegemonic) and is resolved per-event in `toDispatch`, not from this table.
+  FACTION_DOCTRINE: { kind: "Doctrine", category: "doctrine" },
   SECTOR_CONCLUDED: { kind: "Epilogue", category: "conclusion" },
+};
+
+/**
+ * Per-doctrine-shift label, so a hegemonic turn and a defensive retrenchment read
+ * apart at a glance. Both share the `doctrine` accent. The category is fixed; the
+ * label is resolved per-event in `toDispatch`.
+ */
+const DOCTRINE_META: Record<PostureShift, { kind: string }> = {
+  hegemonic: { kind: "Hegemony" },
+  defensive: { kind: "Retrenchment" },
 };
 
 /** Per-fortune label + category, so a discovery reads as good news, not crisis. */
@@ -122,6 +137,7 @@ const CATEGORY_ORDER: readonly DispatchCategory[] = [
   "contact",
   "collapse",
   "leadership",
+  "doctrine",
   "diplomacy",
   "conclusion",
 ];
@@ -134,6 +150,7 @@ const CATEGORY_FILTER_LABEL: Record<DispatchCategory, string> = {
   contact: "First Contact",
   collapse: "Collapse",
   leadership: "Leadership",
+  doctrine: "Doctrine",
   diplomacy: "Diplomacy",
   conclusion: "Epilogue",
 };
@@ -151,7 +168,9 @@ export function toDispatch(event: WorldEvent): Dispatch {
       ? FORTUNE_META[event.data.fortune]
       : event.type === "DIPLOMACY"
         ? DIPLOMACY_META[event.data.kind]
-        : TYPE_META[event.type];
+        : event.type === "FACTION_DOCTRINE"
+          ? { kind: DOCTRINE_META[event.data.shift].kind, category: "doctrine" as const }
+          : TYPE_META[event.type];
   return {
     cycle: event.tick,
     kind: meta.kind,

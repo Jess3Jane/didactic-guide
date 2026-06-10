@@ -25,6 +25,7 @@ import type {
   StarSystem,
   World,
 } from "./world";
+import type { PostureShift } from "./posture";
 
 // --- Event model -------------------------------------------------------------
 
@@ -47,6 +48,7 @@ export type WorldEventType =
   | "WORLD_FORTUNE"
   | "LEADERSHIP_CHANGE"
   | "DIPLOMACY"
+  | "FACTION_DOCTRINE"
   | "SECTOR_CONCLUDED";
 
 /** Which stockpile a crisis concerns. Mirrors the keys of `Resources`. */
@@ -271,6 +273,20 @@ export interface DiplomacyEvent extends EventBase {
 }
 
 /**
+ * A faction's strategic footing shifts with its fortunes (issue #24). `actors[0]`
+ * is the faction, led by `leader`; `shift` is the posture it has entered — a
+ * battered power turned `defensive` to hold what remains, or an ascendant one
+ * turned `hegemonic` to press for mastery. `location`, when present, is its home
+ * system. Only these two notable turns are reported; a quiet return to its
+ * baseline temperament is not an event. The `PostureShift` vocabulary lives with
+ * the posture model in `posture.ts`.
+ */
+export interface FactionDoctrineEvent extends EventBase {
+  type: "FACTION_DOCTRINE";
+  data: { shift: PostureShift; leader: LeaderRef };
+}
+
+/**
  * The history reaches its end (issue #22). For a `unified` outcome the lone
  * surviving faction is `actors[0]`; a `dark` outcome names no one.
  */
@@ -292,6 +308,7 @@ export type WorldEvent =
   | WorldFortuneEvent
   | LeadershipChangeEvent
   | DiplomacyEvent
+  | FactionDoctrineEvent
   | SectorConcludedEvent;
 
 /** Every event type, handy for iteration (tests, future filtering). */
@@ -307,6 +324,7 @@ export const EVENT_TYPES: readonly WorldEventType[] = [
   "WORLD_FORTUNE",
   "LEADERSHIP_CHANGE",
   "DIPLOMACY",
+  "FACTION_DOCTRINE",
   "SECTOR_CONCLUDED",
 ] as const;
 
@@ -665,6 +683,24 @@ export function describe(event: WorldEvent): string {
       return pickVariant(event, byKind[event.data.kind])();
     }
 
+    case "FACTION_DOCTRINE": {
+      const f = event.actors[0].name;
+      const lead = styled(event.data.leader);
+      const byShift: Record<PostureShift, (() => string)[]> = {
+        hegemonic: [
+          () => `Commanding the sector, the ${f} cast off restraint and turned to open hegemony.`,
+          () => `${lead} of the ${f}, now dominant, bent every effort toward mastery of the sector.`,
+          () => `Ascendant above its rivals, the ${f} abandoned all caution for conquest.`,
+        ],
+        defensive: [
+          () => `Bled below its height, the ${f} pulled back to a defensive footing.`,
+          () => `${lead} of the ${f} set ambition aside, hunkering down to hold what remained.`,
+          () => `Its reach overextended and its borders bleeding, the ${f} turned inward to recover.`,
+        ],
+      };
+      return pickVariant(event, byShift[event.data.shift])();
+    }
+
     case "SECTOR_CONCLUDED": {
       if (event.data.outcome === "unified") {
         const victor = event.actors[0]?.name ?? "a lone power";
@@ -926,6 +962,27 @@ export function diplomacy(
     actors: [ref(initiator), ref(other)],
     location: system ? ref(system) : undefined,
     data: { kind, leader: leaderRef(initiator.leader) },
+  });
+}
+
+/**
+ * A faction's strategic footing turns (issue #24). `shift` is the posture it has
+ * entered — `defensive` for a battered power pulling back, `hegemonic` for an
+ * ascendant one pressing for mastery; its leader is named in the dispatch.
+ * `homeSystem`, when given, anchors the turn to the faction's seat.
+ */
+export function factionDoctrine(
+  tick: number,
+  faction: Faction,
+  shift: PostureShift,
+  homeSystem?: StarSystem,
+): FactionDoctrineEvent {
+  return withSummary<FactionDoctrineEvent>({
+    type: "FACTION_DOCTRINE",
+    tick,
+    actors: [ref(faction)],
+    location: homeSystem ? ref(homeSystem) : undefined,
+    data: { shift, leader: leaderRef(faction.leader) },
   });
 }
 

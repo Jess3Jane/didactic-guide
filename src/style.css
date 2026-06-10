@@ -12,6 +12,7 @@
   --accent-green: #68d391;
   --accent-violet: #b794f4;
   --accent-gold: #ecc94b;
+  --accent-steel: #63b3ed;
   font-family: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
 }
 
@@ -631,6 +632,16 @@ body {
 }
 .dispatch--leadership .dispatch__kind {
   color: var(--accent-violet);
+}
+
+/* Doctrine — a faction's strategic footing shifting with its fortunes (a turn to
+   hegemony, or a battered retrenchment). Set apart in steel blue, a beat of
+   strategy distinct from leadership's violet and diplomacy's gold. */
+.dispatch--doctrine {
+  border-left-color: var(--accent-steel);
+}
+.dispatch--doctrine .dispatch__kind {
+  color: var(--accent-steel);
 }
 
 /* Diplomacy — the politics between powers, set apart in gold. Hostile turns
