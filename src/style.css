@@ -295,6 +295,142 @@ body {
   }
 }
 
+/* --- Sector map ----------------------------------------------------------- */
+
+.map {
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 0.9rem 0.9rem;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  border-radius: 8px;
+}
+
+.map__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.map__title {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--fg-dim);
+}
+
+.map__toggle {
+  font-size: 0.68rem;
+}
+
+.map--collapsed .map__body {
+  display: none;
+}
+
+.map__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.map__svg {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 42vh;
+  margin: 0 auto;
+  aspect-ratio: 1 / 1;
+  background: radial-gradient(
+    circle at 50% 40%,
+    rgba(79, 209, 197, 0.05),
+    transparent 70%
+  );
+  border-radius: 6px;
+}
+
+.map__lane {
+  stroke: var(--border);
+  stroke-width: 2.5;
+}
+
+.map__system {
+  stroke: var(--bg);
+  stroke-width: 3;
+  transition: fill 0.4s ease;
+}
+
+/* An unclaimed system reads as a hollow, dimmer marker. */
+.map__system--neutral {
+  stroke: var(--fg-dim);
+  fill-opacity: 0.5;
+}
+
+/* A contested frontier gets a warning ring so a tug-of-war is visible. */
+.map__system--contested {
+  stroke: var(--accent-red);
+  stroke-width: 4;
+  stroke-dasharray: 6 5;
+}
+
+.map__label {
+  fill: var(--fg-dim);
+  font-size: 26px;
+  letter-spacing: 0.04em;
+  font-family: inherit;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 4;
+}
+
+.map__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.74rem;
+}
+
+.map__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.map__legend-item--fallen {
+  opacity: 0.45;
+}
+
+.map__legend-item--fallen .map__legend-name {
+  text-decoration: line-through;
+}
+
+.map__swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 3px;
+  flex: none;
+}
+
+.map__legend-name {
+  color: var(--fg);
+}
+
+.map__legend-count {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map__system {
+    transition: none;
+  }
+}
+
 /* --- Feed ----------------------------------------------------------------- */
 
 .feed {
