@@ -54,15 +54,15 @@ describe("a pact gates who fights whom", () => {
   it("never lets a pact-bound pair clash while the pact holds", () => {
     // Replaying the log in emission order, a pair is "bound" once it strikes a
     // pact (or makes peace, or allies) and unbound only by a betrayal — which is
-    // announced *before* the strike it opens. So a CONFLICT must never name a
-    // pair that is bound at that moment.
+    // announced *before* the strike it opens — or an open renunciation (issue
+    // #39). So a CONFLICT must never name a pair that is bound at that moment.
     for (let i = 0; i < 20; i++) {
       const bound = new Set<string>();
       let sawBound = false;
       for (const e of run(engineFromSeed(`gate-${i}`), 200)) {
         if (e.type === "DIPLOMACY") {
           const key = pairOf(e);
-          if (e.data.kind === "betrayal") {
+          if (e.data.kind === "betrayal" || e.data.kind === "renounce") {
             bound.delete(key);
           } else if (
             e.data.kind === "pact" ||

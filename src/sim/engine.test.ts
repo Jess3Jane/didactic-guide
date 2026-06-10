@@ -71,7 +71,9 @@ describe("concluding a run (issue #22)", () => {
   // Most sectors sustain indefinitely (issue #19), so a conclusion is the
   // exception. These seeds were chosen because they resolve to a single
   // survivor within a few cycles, keeping the terminal-contract tests fast.
-  const CONCLUDING_SEEDS = ["seed-134", "seed-150", "seed-203", "seed-379"];
+  // (Re-scanned for Phase 3: the destabilizers (issue #39) changed every
+  // history, so the previous fast-concluding seeds no longer conclude fast.)
+  const CONCLUDING_SEEDS = ["seed-15", "seed-77", "seed-80", "seed-217"];
 
   /** Tick until the run concludes or `cap` cycles pass; return the full log. */
   const runToConclusion = (engine: Engine, cap = 80): WorldEvent[] => {

@@ -4,7 +4,9 @@ import {
   describe,
   EVENT_TYPES,
   factionFounded,
+  factionSeceded,
   worldColonized,
+  worldAbandoned,
   conflict,
   resourceCrisis,
   firstContact,
@@ -163,6 +165,7 @@ group("describe", () => {
       "trade",
       "threat",
       "betrayal",
+      "renounce",
     ];
     for (const kind of kinds) {
       const e = diplomacy(10, kind, helion, iron, aldebaran);
@@ -175,6 +178,39 @@ group("describe", () => {
       expect(e.summary).toContain("Iron Dominion");
       expect(isGrammatical(e.summary)).toBe(true);
     }
+  });
+
+  it("renders WORLD_ABANDONED naming faction and world", () => {
+    const e = worldAbandoned(15, helion, vex);
+    expect(e.actors).toEqual([{ id: "fac-0", name: "Helion Compact" }]);
+    expect(e.location).toEqual({ id: "sys-2-w1", name: "Vex-9" });
+    expect(e.summary).toContain("Helion Compact");
+    expect(e.summary).toContain("Vex-9");
+    expect(isGrammatical(e.summary)).toBe(true);
+  });
+
+  it("renders FACTION_SECEDED naming rebel, parent, leader, and scale", () => {
+    const rebel: Faction = {
+      id: "fac-2",
+      name: "Sundered Accord",
+      homeSystemId: "sys-2",
+      ownedWorldIds: ["sys-2-w0", "sys-2-w1"],
+      resources: { population: 40, energy: 20, materials: 20, influence: 8 },
+      disposition: "militarist",
+      leader: { name: "Orla Vex", title: "Marshal", trait: "ambitious", since: 18 },
+    };
+    const e = factionSeceded(18, rebel, helion, aldebaran);
+    expect(e.actors.map((a) => a.id)).toEqual(["fac-2", "fac-0"]);
+    expect(e.data.worlds).toBe(2);
+    expect(e.summary).toContain("Sundered Accord");
+    expect(e.summary).toContain("Helion Compact");
+    expect(e.summary).toContain("Marshal Orla Vex");
+    expect(e.summary).toContain("2 outlying worlds");
+    expect(isGrammatical(e.summary)).toBe(true);
+
+    // A single seceding world reads in the singular.
+    const lone = factionSeceded(18, rebel, helion, aldebaran, 1);
+    expect(lone.summary).toContain("an outlying world");
   });
 
   it("renders SECTOR_CONCLUDED, naming the victor when unified", () => {
@@ -193,7 +229,9 @@ group("describe", () => {
   it("produces a grammatical, non-empty sentence for every event type", () => {
     const samples = [
       factionFounded(0, helion, aldebaran),
+      factionSeceded(10, iron, helion, aldebaran),
       worldColonized(1, helion, vex),
+      worldAbandoned(2, helion, vex),
       conflict(2, iron, helion, vex, true),
       resourceCrisis(3, helion, "energy"),
       firstContact(4, helion, iron, aldebaran),
