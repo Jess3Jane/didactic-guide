@@ -10,6 +10,7 @@ import {
   factionCollapsed,
   worldFortune,
   leadershipChange,
+  factionDoctrine,
   sectorConcluded,
   type WorldEvent,
 } from "../sim/events";
@@ -97,6 +98,16 @@ group("toDispatch", () => {
     const epilogue = toDispatch(sectorConcluded(40, "unified", helion));
     expect(epilogue.category).toBe("conclusion");
     expect(epilogue.kind).toBe("Epilogue");
+  });
+
+  it("colours FACTION_DOCTRINE by its shift, under the doctrine category", () => {
+    const hegemony = toDispatch(factionDoctrine(7, helion, "hegemonic"));
+    expect(hegemony.category).toBe("doctrine");
+    expect(hegemony.kind).toBe("Hegemony");
+
+    const retrench = toDispatch(factionDoctrine(7, iron, "defensive"));
+    expect(retrench.category).toBe("doctrine");
+    expect(retrench.kind).toBe("Retrenchment");
   });
 
   it("leaves location undefined when the event carries none", () => {

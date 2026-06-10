@@ -39,6 +39,7 @@ import {
   diplomacy,
   warDeclared,
   warEnded,
+  factionDoctrine,
   sectorConcluded,
 } from "./events";
 import {
@@ -49,6 +50,7 @@ import {
   clampStanding,
   pactBarsWar,
 } from "./relations";
+import { type Posture, postureFor, isPostureShift } from "./posture";
 
 // --- Tuning ------------------------------------------------------------------
 //
@@ -307,6 +309,16 @@ export interface RelationSnapshot {
 }
 
 /**
+ * A read-only view of one faction's current strategic footing (issue #24), for
+ * the UI and tests. `posture` is derived each cycle from circumstance, so it
+ * shifts as the faction's fortunes do.
+ */
+export interface PostureSnapshot {
+  faction: string;
+  posture: Posture;
+}
+
+/**
  * Where a run stands (issue #22). `ongoing` while more than one power survives;
  * `unified` once a single faction outlasts every rival (it is the `victor`);
  * `dark` once the last faction falls. The two terminal states are deliberate
@@ -336,6 +348,8 @@ export interface Engine {
   getStatus(): Conclusion;
   /** A snapshot of the current relations between every acquainted pair (issue #24). */
   getRelations(): RelationSnapshot[];
+  /** Each living faction's current strategic footing (issue #24). */
+  getPostures(): PostureSnapshot[];
 }
 
 // --- Helpers -----------------------------------------------------------------
@@ -435,11 +449,19 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   const standing = new Map<string, number>();
   const pacts = new Map<string, PactKind>();
 
+  // Each faction's current strategic footing, derived from circumstance each
+  // cycle (issue #24). Everyone opens `steady` — acting on disposition — and
+  // shifts to `defensive` or `hegemonic` only as fortunes turn. The map drives
+  // action choice and lets a shift be detected (and announced) on the cycle it
+  // happens.
+  const posture = new Map<string, Posture>();
+
   const factionIds = Object.keys(world.factions).sort(byId);
   for (const id of factionIds) {
     inCrisis.set(id, new Set());
     crisisHistory.set(id, { population: 0, energy: 0, materials: 0, influence: 0 });
     peakWorlds.set(id, world.factions[id].ownedWorldIds.length);
+    posture.set(id, "steady");
   }
 
   /** Canonical, order-independent key for a faction pair. */
@@ -1033,6 +1055,54 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     );
   };
 
+  /**
+   * Recompute every living faction's posture from its circumstance (issue #24),
+   * and announce the notable turns. Each cycle a faction reads the room: a power
+   * in crisis or bled well below its territorial height turns `defensive` and
+   * pulls back; one that has come to command the sector turns `hegemonic` and
+   * presses for mastery whatever its temperament; everyone else holds `steady`
+   * and acts on disposition as before. A shift *into* a notable footing is a
+   * dispatch — a once-per-entry beat, like a crisis — while settling back to
+   * steady is the unremarkable baseline and passes quietly.
+   */
+  const updatePostures = (tick: number): WorldEvent[] => {
+    const events: WorldEvent[] = [];
+    const alive = living().filter((f) => f.ownedWorldIds.length > 0);
+    const sectorWorlds = alive.reduce((n, f) => n + f.ownedWorldIds.length, 0);
+    // The single largest power by territory, if one strictly leads (a tie for
+    // the top means no one yet commands the sector).
+    let topWorlds = 0;
+    let topCount = 0;
+    for (const f of alive) {
+      const held = f.ownedWorldIds.length;
+      if (held > topWorlds) {
+        topWorlds = held;
+        topCount = 1;
+      } else if (held === topWorlds) {
+        topCount += 1;
+      }
+    }
+    for (const faction of alive) {
+      const next = postureFor({
+        strained: isStrained(faction),
+        ownedWorlds: faction.ownedWorldIds.length,
+        peakWorlds: peakWorlds.get(faction.id)!,
+        sectorWorlds,
+        isLargest: topCount === 1 && faction.ownedWorldIds.length === topWorlds,
+        livingFactions: alive.length,
+      });
+      const prev = posture.get(faction.id)!;
+      if (next === prev) continue;
+      posture.set(faction.id, next);
+      if (isPostureShift(next)) {
+        events.push(
+          factionDoctrine(tick, faction, next, world.systems[faction.homeSystemId]),
+        );
+      }
+    }
+    return events;
+  };
+
   /** Choose this faction's single action, by disposition and circumstance. */
   const chooseAction = (
     faction: Faction,
@@ -1059,8 +1129,26 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       if (mark) return { kind: "WAR", target: mark, betrayal: true };
     }
 
-    // A faction stretched thin recovers before it overreaches further.
-    if (isStrained(faction)) return { kind: "CONSOLIDATE" };
+    const footing = posture.get(faction.id) ?? "steady";
+
+    // A faction stretched thin — or on a defensive footing (issue #24) — pulls
+    // back to recover rather than overreach: no wars or colonies of choice, only
+    // consolidation. Forced wars (a boiling rivalry, a campaign already under
+    // way) were handled above, so a defensive power still fights to defend itself.
+    // Strain is re-checked here because a clash earlier this cycle may have just
+    // bled this faction below the line the posture step saw.
+    if (isStrained(faction) || footing === "defensive") {
+      return { kind: "CONSOLIDATE" };
+    }
+
+    // A hegemon presses its advantage whatever its temperament (issue #24):
+    // it reaches for every world and war within grasp, so a dominant industrious
+    // or isolationist power stops keeping to itself and turns conqueror.
+    if (footing === "hegemonic") {
+      if (canColonize) return { kind: "COLONIZE", target: colonize[0] };
+      if (canWar) return { kind: "WAR", target: war[0] };
+      return { kind: "CONSOLIDATE" };
+    }
 
     switch (faction.disposition) {
       case "expansionist":
@@ -1365,6 +1453,11 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     //     each, gated so the politics reads as an occasional beat (issue #24).
     events.push(...runDiplomacy(t));
 
+    // 2e. Each faction reads its circumstance and may shift its strategic footing
+    //     (issue #24): a battered power turns defensive, a dominant one hegemonic.
+    //     Recomputed before actions so this cycle's choices act on the new footing.
+    events.push(...updatePostures(t));
+
     // 3. Each faction takes one action toward its goal. Ownership is tracked
     //    live so a world taken early in the tick is seen as held later in it.
     const owner = buildOwnership();
@@ -1427,6 +1520,15 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         out.push({ a, b, standing: s, pact, stance: stanceFor(s, pact) });
       }
       out.sort((x, y) => byId(x.a, y.a) || byId(x.b, y.b));
+      return out;
+    },
+    getPostures: () => {
+      const out: PostureSnapshot[] = [];
+      for (const faction of living()) {
+        if (faction.ownedWorldIds.length === 0) continue;
+        out.push({ faction: faction.id, posture: posture.get(faction.id) ?? "steady" });
+      }
+      out.sort((x, y) => byId(x.faction, y.faction));
       return out;
     },
   };

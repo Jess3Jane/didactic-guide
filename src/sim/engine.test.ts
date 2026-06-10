@@ -71,7 +71,7 @@ describe("concluding a run (issue #22)", () => {
   // Most sectors sustain indefinitely (issue #19), so a conclusion is the
   // exception. These seeds were chosen because they resolve to a single
   // survivor within a few cycles, keeping the terminal-contract tests fast.
-  const CONCLUDING_SEEDS = ["seed-134", "seed-150", "seed-203", "seed-381"];
+  const CONCLUDING_SEEDS = ["seed-134", "seed-150", "seed-203", "seed-379"];
 
   /** Tick until the run concludes or `cap` cycles pass; return the full log. */
   const runToConclusion = (engine: Engine, cap = 80): WorldEvent[] => {
@@ -236,6 +236,69 @@ describe("emergence", () => {
           .join("|"),
       );
     expect(new Set(pairs).size).toBe(pairs.length);
+  });
+});
+
+describe("shifting postures (issue #24)", () => {
+  it("reports a posture for every living faction, and only living ones", () => {
+    const engine = engineFromSeed("posture-roster");
+    run(engine, 40);
+    const living = new Set(
+      Object.values(engine.sector.factions)
+        .filter((f) => f.ownedWorldIds.length > 0)
+        .map((f) => f.id),
+    );
+    const postures = engine.getPostures();
+    expect(new Set(postures.map((p) => p.faction))).toEqual(living);
+    for (const p of postures) {
+      expect(["defensive", "steady", "hegemonic"]).toContain(p.posture);
+    }
+  });
+
+  it("emits FACTION_DOCTRINE shifts as fortunes turn, across seeds", () => {
+    const shifts = new Set<string>();
+    for (let i = 0; i < 25; i++) {
+      for (const e of run(engineFromSeed(`doctrine-${i}`), 150)) {
+        if (e.type === "FACTION_DOCTRINE") shifts.add(e.data.shift);
+      }
+    }
+    // A lively sample should exhibit both a power overreaching and pulling back,
+    // and one rising to command the sector.
+    expect(shifts.has("defensive")).toBe(true);
+    expect(shifts.has("hegemonic")).toBe(true);
+  });
+
+  it("only announces a faction's entry into a notable footing, not every cycle", () => {
+    // A FACTION_DOCTRINE event marks a *transition*; the same faction can't be
+    // told it turned hegemonic twice without first leaving that footing. Track
+    // the running posture per faction from the dispatches and check each event
+    // is a genuine change into a notable state.
+    const engine = engineFromSeed("doctrine-once");
+    const current = new Map<string, string>();
+    for (let t = 0; t < 200; t++) {
+      for (const e of engine.tick()) {
+        if (e.type !== "FACTION_DOCTRINE") continue;
+        const id = e.actors[0].id;
+        expect(current.get(id) ?? "steady").not.toBe(e.data.shift);
+        current.set(id, e.data.shift);
+      }
+      // A faction back to steady (no longer notable) re-arms: clear any that the
+      // snapshot now reports as steady so a later relapse can fire again.
+      for (const p of engine.getPostures()) {
+        if (p.posture === "steady") current.delete(p.faction);
+      }
+    }
+  });
+
+  it("a FACTION_DOCTRINE event names the faction and carries its leader", () => {
+    for (let i = 0; i < 30; i++) {
+      for (const e of run(engineFromSeed(`doctrine-shape-${i}`), 120)) {
+        if (e.type !== "FACTION_DOCTRINE") continue;
+        expect(e.actors).toHaveLength(1);
+        expect(e.data.leader.name.length).toBeGreaterThan(0);
+        expect(e.summary.length).toBeGreaterThan(0);
+      }
+    }
   });
 });
 
