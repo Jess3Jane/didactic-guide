@@ -217,3 +217,163 @@ group("createFeed", () => {
     expect(feed.element.querySelector(".feed__empty")).not.toBeNull();
   });
 });
+
+// --- Filtering (issue #26) ---------------------------------------------------
+
+const visibleCycles = (feed: { element: HTMLElement }): number[] =>
+  [...feed.element.querySelectorAll(".dispatch:not([hidden])")].map((n) =>
+    Number(n.querySelector(".dispatch__cycle")!.textContent!.replace("Cycle ", "")),
+  );
+
+const factionFilter = (feed: { element: HTMLElement }): HTMLSelectElement =>
+  feed.element.querySelector(".feed__filter--faction")!;
+const typeFilter = (feed: { element: HTMLElement }): HTMLSelectElement =>
+  feed.element.querySelector(".feed__filter--type")!;
+
+/** Pick a `<select>` value and fire the change the UI listens for. */
+const choose = (select: HTMLSelectElement, value: string): void => {
+  select.value = value;
+  select.dispatchEvent(new Event("change"));
+};
+
+const optionValues = (select: HTMLSelectElement): string[] =>
+  [...select.options].map((o) => o.value);
+
+group("feed filtering", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("offers a filter bar that starts unfiltered", () => {
+    const feed = createFeed();
+    expect(factionFilter(feed)).not.toBeNull();
+    expect(typeFilter(feed)).not.toBeNull();
+    // Only the "all" option until events arrive; nothing claims to filter yet.
+    expect(optionValues(factionFilter(feed))).toEqual([""]);
+    expect(optionValues(typeFilter(feed))).toEqual([""]);
+    expect(
+      feed.element.querySelector<HTMLButtonElement>(".feed__filter-clear")!
+        .hidden,
+    ).toBe(true);
+  });
+
+  it("grows faction + type options to match the chronicle", () => {
+    const feed = createFeed();
+    feed.push([factionFounded(0, helion, helionHome)]);
+    feed.push([conflict(2, iron, helion, vex, true)]);
+
+    expect(optionValues(factionFilter(feed))).toEqual([
+      "",
+      "Helion Compact",
+      "Iron Dominion",
+    ]);
+    // Categories follow the curated order, not arrival order.
+    expect(optionValues(typeFilter(feed))).toEqual([
+      "",
+      "founding",
+      "conflict",
+    ]);
+  });
+
+  it("narrows the feed to one faction and restores on clear", () => {
+    const feed = createFeed();
+    feed.push([factionFounded(0, helion, helionHome)]);
+    feed.push([worldColonized(1, helion, vex)]);
+    feed.push([conflict(2, iron, helion, vex, true)]);
+
+    choose(factionFilter(feed), "Iron Dominion");
+    // Conflict lists the attacker (iron) first, so only that dispatch shows.
+    expect(visibleCycles(feed)).toEqual([2]);
+
+    choose(factionFilter(feed), "");
+    expect(visibleCycles(feed)).toEqual([2, 1, 0]);
+  });
+
+  it("narrows by event type", () => {
+    const feed = createFeed();
+    feed.push([factionFounded(0, helion, helionHome)]);
+    feed.push([worldColonized(1, helion, vex)]);
+    feed.push([worldColonized(3, iron, vex)]);
+
+    choose(typeFilter(feed), "expansion");
+    expect(visibleCycles(feed)).toEqual([3, 1]);
+  });
+
+  it("combines faction and type filters", () => {
+    const feed = createFeed();
+    feed.push([worldColonized(1, helion, vex)]);
+    feed.push([worldColonized(2, iron, vex)]);
+    feed.push([conflict(3, helion, iron, vex, true)]);
+
+    choose(factionFilter(feed), "Helion Compact");
+    choose(typeFilter(feed), "expansion");
+    expect(visibleCycles(feed)).toEqual([1]);
+  });
+
+  it("applies the active filter to dispatches arriving live", () => {
+    const feed = createFeed();
+    feed.push([worldColonized(1, helion, vex)]);
+    choose(factionFilter(feed), "Helion Compact");
+
+    // A rival's dispatch lands while the filter is set — it must stay hidden.
+    feed.push([conflict(2, iron, helion, vex, true)]);
+    expect(visibleCycles(feed)).toEqual([1]);
+    // ...but a matching one shows immediately.
+    feed.push([worldColonized(3, helion, vex)]);
+    expect(visibleCycles(feed)).toEqual([3, 1]);
+  });
+
+  it("shows a distinct placeholder when a filter hides everything", () => {
+    const feed = createFeed();
+    feed.push([worldColonized(1, helion, vex)]);
+    feed.push([conflict(2, iron, helion, vex, true)]);
+    // Helion has expanded but never fought: this pair matches no dispatch.
+    choose(factionFilter(feed), "Helion Compact");
+    choose(typeFilter(feed), "conflict");
+
+    expect(visibleCycles(feed)).toEqual([]);
+    expect(feed.element.querySelector(".feed__empty--filtered")).not.toBeNull();
+    // The "nothing yet" placeholder stays away while dispatches exist.
+    const empties = feed.element.querySelectorAll(".feed__empty");
+    expect(
+      [...empties].every((e) => e.classList.contains("feed__empty--filtered")),
+    ).toBe(true);
+
+    choose(typeFilter(feed), "");
+    expect(feed.element.querySelector(".feed__empty--filtered")).toBeNull();
+  });
+
+  it("surfaces a live count and a Clear button while filtering", () => {
+    const feed = createFeed();
+    feed.push([worldColonized(1, helion, vex)]);
+    feed.push([conflict(2, iron, helion, vex, true)]);
+
+    const clear = feed.element.querySelector<HTMLButtonElement>(
+      ".feed__filter-clear",
+    )!;
+    const count = feed.element.querySelector(".feed__filter-count")!;
+    expect(clear.hidden).toBe(true);
+    expect((count as HTMLElement).hidden).toBe(true);
+
+    choose(factionFilter(feed), "Helion Compact");
+    expect(clear.hidden).toBe(false);
+    expect(count.textContent).toBe("Showing 1 of 2");
+
+    clear.click();
+    expect(factionFilter(feed).value).toBe("");
+    expect(clear.hidden).toBe(true);
+    expect(visibleCycles(feed)).toEqual([2, 1]);
+  });
+
+  it("resets the filter vocabulary on a fresh sector", () => {
+    const feed = createFeed();
+    feed.push([factionFounded(0, helion, helionHome)]);
+    choose(factionFilter(feed), "Helion Compact");
+
+    // A new sector has new factions; the old filter must not linger.
+    feed.reset([factionFounded(0, iron, helionHome)]);
+    expect(factionFilter(feed).value).toBe("");
+    expect(optionValues(factionFilter(feed))).toEqual(["", "Iron Dominion"]);
+    expect(visibleCycles(feed)).toEqual([0]);
+  });
+});
