@@ -36,8 +36,17 @@ import {
   factionCollapsed,
   worldFortune,
   leadershipChange,
+  diplomacy,
   sectorConcluded,
 } from "./events";
+import {
+  type PactKind,
+  type Stance,
+  RELATION,
+  stanceFor,
+  clampStanding,
+  pactBarsWar,
+} from "./relations";
 
 // --- Tuning ------------------------------------------------------------------
 //
@@ -170,10 +179,84 @@ const LEADERSHIP = {
   ascensionChance: 0.25,
 } as const;
 
+// --- Phase 2: inter-faction relations & diplomacy (issue #24) ----------------
+//
+// Every acquainted pair carries a `standing` (how they feel) that drifts each
+// cycle, and may hold a negotiated `pact` (non-aggression or alliance) that
+// bars war between them. Together these give the sector a political layer:
+// rivalries that boil over, friendships that hold the peace, and the betrayals
+// that break them — so who fights whom is no longer a fixed function of
+// disposition alone. The pure model (bands, stance derivation) lives in
+// `relations.ts`; the stateful, RNG-driven evolution lives here.
+
+/** Per-cycle nudges to a pair's standing (added, then clamped to RELATION's range). */
+const RELATIONS = {
+  /** Per point of summed aggression, a bordering pair sours each cycle. */
+  friction: 1.5,
+  /** A pact damps but does not erase that friction, so a pact can still fray. */
+  pactFrictionScale: 0.85,
+  /** Enemy-of-my-enemy: a shared rival warms a pair toward alliance each cycle. */
+  sharedRivalWarmth: 3,
+  /** A standing pact builds trust over time, all else equal. */
+  pactTrust: 1.5,
+  /** A war clash sours the combatants' standing sharply. */
+  clashBlow: 18,
+} as const;
+
+/**
+ * Diplomacy odds and effects. Each cycle every acquainted, living pair gets at
+ * most one move, gated by these per-cycle chances so politics is an occasional
+ * beat rather than noise; the standing rewards/penalties steer relations toward
+ * the next move. All draws flow through the injected Rng.
+ */
+const DIPLOMACY = {
+  chance: {
+    /** A battered pair at war may lay it down — but many wars still run to a result. */
+    peace: 0.22,
+    alliance: 0.16,
+    pact: 0.18,
+    trade: 0.08,
+    /** A wary neutral pair is leaned on by an aggressor, escalating toward rivalry. */
+    threat: 0.06,
+    /** A soured pact, broken by an opportunistic aggressor. Uncommon and dramatic. */
+    betrayal: 0.1,
+  },
+  /** Standing each move moves the pair (peace/trade/pacts warm; threats sour). */
+  standing: {
+    peace: 25,
+    alliance: 15,
+    pact: 10,
+    trade: 5,
+    threat: -18,
+  },
+  /** A trade accord enriches both sides a little; values added to each stockpile. */
+  tradeBoost: { energy: 6, materials: 6, influence: 2 },
+  /** A threat raises war pressure as well as souring standing. */
+  threatTension: 10,
+  /** Minimum effective aggression for a power to coerce or betray. */
+  aggressorFloor: 2,
+  /** A pact tempts betrayal only once standing has soured to/below this. */
+  betrayalStanding: -8,
+  /** And only when the betrayer outweighs its mark by at least this factor. */
+  betrayalEdge: 1.3,
+} as const;
+
 // --- Engine state ------------------------------------------------------------
 
 /** A single faction action resolved during a tick. */
 type ActionKind = "COLONIZE" | "WAR" | "CONSOLIDATE";
+
+/**
+ * A read-only view of one acquainted pair's relationship (issue #24), for the
+ * UI and tests. `a`/`b` are faction ids in canonical (id-sorted) order.
+ */
+export interface RelationSnapshot {
+  a: string;
+  b: string;
+  standing: number;
+  pact?: PactKind;
+  stance: Stance;
+}
 
 /**
  * Where a run stands (issue #22). `ongoing` while more than one power survives;
@@ -203,6 +286,8 @@ export interface Engine {
   getTick(): number;
   /** Whether the run is still going, or has concluded (and how). */
   getStatus(): Conclusion;
+  /** A snapshot of the current relations between every acquainted pair (issue #24). */
+  getRelations(): RelationSnapshot[];
 }
 
 // --- Helpers -----------------------------------------------------------------
@@ -226,6 +311,20 @@ function strength(faction: Faction): number {
 /** Clamp a world trait to [0, 1], rounded to two decimals to stay tidy. */
 function clamp01(value: number): number {
   return Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
+}
+
+/**
+ * Whether a faction is stretched thin — short on governance or people, or
+ * starved of both energy and materials. A strained power pulls back to recover
+ * rather than overreach, and is the one willing to sue for peace (issue #24).
+ */
+function isStrained(faction: Faction): boolean {
+  const r = faction.resources;
+  return (
+    r.influence < CRISIS_THRESHOLD ||
+    r.population < 30 ||
+    (r.energy < CRISIS_THRESHOLD && r.materials < CRISIS_THRESHOLD)
+  );
 }
 
 /** Clamp every stockpile to a non-negative integer, in place. */
@@ -279,6 +378,13 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   // height it fell from.
   const peakWorlds = new Map<string, number>();
 
+  // --- Relations memory (issue #24) ---
+  // Standing per acquainted pair ("fac-0|fac-1"), set to 0 at first contact and
+  // drifting each cycle; and the negotiated pact, if any, that bars war between
+  // them. Both are keyed by the canonical pair key.
+  const standing = new Map<string, number>();
+  const pacts = new Map<string, PactKind>();
+
   const factionIds = Object.keys(world.factions).sort(byId);
   for (const id of factionIds) {
     inCrisis.set(id, new Set());
@@ -289,6 +395,29 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   /** Canonical, order-independent key for a faction pair. */
   const pairKey = (a: string, b: string): string =>
     byId(a, b) <= 0 ? `${a}|${b}` : `${b}|${a}`;
+
+  // --- Relation helpers (issue #24) ---
+
+  /** Current standing between a pair (0 — wary neutral — if not yet recorded). */
+  const standingOf = (a: string, b: string): number =>
+    standing.get(pairKey(a, b)) ?? 0;
+
+  /** The pact governing a pair, if any. */
+  const pactOf = (a: string, b: string): PactKind | undefined =>
+    pacts.get(pairKey(a, b));
+
+  /** The discrete stance between a pair, derived from standing and pact. */
+  const stanceOf = (a: string, b: string): Stance =>
+    stanceFor(standingOf(a, b), pactOf(a, b));
+
+  /** Whether a non-aggression pact or alliance bars war between a pair. */
+  const atPeace = (a: string, b: string): boolean => pactBarsWar(pactOf(a, b));
+
+  /** Move a pair's standing by `delta`, clamped to the model's range. */
+  const adjustStanding = (a: string, b: string, delta: number): void => {
+    const key = pairKey(a, b);
+    standing.set(key, clampStanding((standing.get(key) ?? 0) + delta));
+  };
 
   // Founding dispatches for the starting roster, derived once.
   const foundingEvents: WorldEvent[] = factionIds.map((id) => {
@@ -469,6 +598,9 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         const where = contactSystem(a, b);
         if (where) {
           met.add(key);
+          // Powers meet as wary strangers: standing opens at neutral 0 and
+          // evolves from here through bordering friction and diplomacy.
+          standing.set(pairKey(a.id, b.id), 0);
           events.push(firstContact(tick, a, b, where));
         }
       }
@@ -495,6 +627,7 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         const b = alive[j];
         const key = pairKey(a.id, b.id);
         if (!met.has(`${a.id}|${b.id}`)) continue;
+        if (atPeace(a.id, b.id)) continue; // a pact stays the war pressure
         if (!contactSystem(a, b)) continue; // friction needs a shared frontier
         const aggression = aggressionOf(a) + aggressionOf(b);
         const gain = TENSION.base + aggression * TENSION.perAggression;
@@ -549,6 +682,7 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     let bestTension: number = TENSION.threshold;
     for (const rival of living()) {
       if (rival.id === faction.id) continue;
+      if (atPeace(faction.id, rival.id)) continue; // a pact holds the peace
       if (!isAggressor(faction, rival)) continue;
       const t = tension.get(pairKey(faction.id, rival.id)) ?? 0;
       if (t >= bestTension) {
@@ -569,6 +703,153 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     }
     targets.sort((x, y) => x.hazard - y.hazard || byId(x.id, y.id));
     return targets[0] ?? null;
+  };
+
+  // --- Step 2c: relations drift & diplomacy (issue #24) ----------------------
+
+  /** Whether `a` and `b` are in an active war (a clash within the lull window). */
+  const atWar = (a: string, b: string, tick: number): boolean => {
+    const war = campaigns.get(pairKey(a, b));
+    return war !== undefined && tick - war.lastClash <= WAR_LULL;
+  };
+
+  /** Whether some living third power is a rival to both `a` and `b`. */
+  const sharesRival = (a: string, b: string): boolean => {
+    for (const c of living()) {
+      if (c.id === a || c.id === b) continue;
+      if (stanceOf(a, c.id) === "rivalry" && stanceOf(b, c.id) === "rivalry") {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /**
+   * Drift every acquainted pair's standing one cycle. Bordering powers grate on
+   * one another in proportion to their aggression (a pact damps but does not
+   * erase this, so even allies can sour into betrayal); a shared rival warms a
+   * pair toward alliance — the enemy-of-my-enemy that gives the sector its
+   * structure; and a standing pact builds trust over time. Pure arithmetic — no
+   * RNG — so it never perturbs the draw stream that drives the rest of the tick.
+   */
+  const driftRelations = (): void => {
+    const alive = living();
+    for (let i = 0; i < alive.length; i++) {
+      for (let j = i + 1; j < alive.length; j++) {
+        const a = alive[i];
+        const b = alive[j];
+        if (!met.has(`${a.id}|${b.id}`)) continue;
+        const pact = pactOf(a.id, b.id);
+        let delta = 0;
+        if (contactSystem(a, b) !== null) {
+          const aggression = aggressionOf(a) + aggressionOf(b);
+          const scale = pact ? RELATIONS.pactFrictionScale : 1;
+          delta -= RELATIONS.friction * aggression * scale;
+        }
+        if (sharesRival(a.id, b.id)) delta += RELATIONS.sharedRivalWarmth;
+        if (pact) delta += RELATIONS.pactTrust;
+        if (delta !== 0) adjustStanding(a.id, b.id, delta);
+      }
+    }
+  };
+
+  /** Apply a trade accord's mutual enrichment to both parties. */
+  const applyTrade = (a: Faction, b: Faction): void => {
+    for (const f of [a, b]) {
+      f.resources.energy += DIPLOMACY.tradeBoost.energy;
+      f.resources.materials += DIPLOMACY.tradeBoost.materials;
+      f.resources.influence += DIPLOMACY.tradeBoost.influence;
+      settleResources(f);
+    }
+  };
+
+  /**
+   * Resolve at most one diplomatic move per acquainted, living pair this cycle.
+   * Moves are chosen by circumstance and gated by per-cycle odds, so politics
+   * stays an occasional beat rather than noise. Effects are symmetric, but each
+   * dispatch names an initiator — the lower-id party for a mutual accord, the
+   * aggressor for a threat — so it can be attributed. `living()` is id-sorted,
+   * so `a` is always the lower id; every random draw flows through the rng in a
+   * fixed pair order, preserving determinism. Betrayal is not here: it is an act
+   * of war, resolved in the action step.
+   */
+  const runDiplomacy = (tick: number): WorldEvent[] => {
+    const events: WorldEvent[] = [];
+    const alive = living();
+    for (let i = 0; i < alive.length; i++) {
+      for (let j = i + 1; j < alive.length; j++) {
+        const a = alive[i];
+        const b = alive[j];
+        if (!met.has(`${a.id}|${b.id}`)) continue;
+
+        const key = pairKey(a.id, b.id);
+        const pact = pactOf(a.id, b.id);
+        const s = standingOf(a.id, b.id);
+        const where = contactSystem(a, b) ?? undefined;
+        const healthy = !isStrained(a) && !isStrained(b);
+
+        // A war both sides are weary of is laid down before anything else.
+        if (atWar(a.id, b.id, tick)) {
+          if ((isStrained(a) || isStrained(b)) && rng.bool(DIPLOMACY.chance.peace)) {
+            pacts.set(key, "nonaggression");
+            adjustStanding(a.id, b.id, DIPLOMACY.standing.peace);
+            ventTension(a.id, b.id);
+            events.push(diplomacy(tick, "peace", a, b, where));
+          }
+          continue; // a pair at war pursues nothing else this cycle
+        }
+
+        // A pact binds the pair: it may deepen into alliance, and partners trade
+        // freely — even while rebuilding — which is how a peace recovers.
+        if (pact) {
+          if (
+            pact === "nonaggression" &&
+            s >= RELATION.allianceAt &&
+            rng.bool(DIPLOMACY.chance.alliance)
+          ) {
+            pacts.set(key, "alliance");
+            adjustStanding(a.id, b.id, DIPLOMACY.standing.alliance);
+            events.push(diplomacy(tick, "alliance", a, b, where));
+          } else if (rng.bool(DIPLOMACY.chance.trade)) {
+            applyTrade(a, b);
+            adjustStanding(a.id, b.id, DIPLOMACY.standing.trade);
+            events.push(diplomacy(tick, "trade", a, b, where));
+          }
+          continue;
+        }
+
+        // No pact: warmth invites pacts and alliances; an aggressor leans on a
+        // wary neutral; warm un-pacted neighbours may simply trade.
+        if (s >= RELATION.allianceAt && rng.bool(DIPLOMACY.chance.alliance)) {
+          pacts.set(key, "alliance");
+          adjustStanding(a.id, b.id, DIPLOMACY.standing.alliance);
+          events.push(diplomacy(tick, "alliance", a, b, where));
+        } else if (s >= RELATION.pactAt && rng.bool(DIPLOMACY.chance.pact)) {
+          pacts.set(key, "nonaggression");
+          adjustStanding(a.id, b.id, DIPLOMACY.standing.pact);
+          events.push(diplomacy(tick, "pact", a, b, where));
+        } else if (
+          where &&
+          s > RELATION.rivalryAt &&
+          s < RELATION.pactAt &&
+          Math.max(aggressionOf(a), aggressionOf(b)) >= DIPLOMACY.aggressorFloor &&
+          rng.bool(DIPLOMACY.chance.threat)
+        ) {
+          // A bordering aggressor leans on a wary neighbour — not on a settled
+          // rival (already hostile) — souring relations and raising war pressure.
+          const coercer = aggressionOf(a) >= aggressionOf(b) ? a : b;
+          const target = coercer === a ? b : a;
+          adjustStanding(a.id, b.id, DIPLOMACY.standing.threat);
+          tension.set(key, (tension.get(key) ?? 0) + DIPLOMACY.threatTension);
+          events.push(diplomacy(tick, "threat", coercer, target, where));
+        } else if (s > 0 && healthy && rng.bool(DIPLOMACY.chance.trade)) {
+          applyTrade(a, b);
+          adjustStanding(a.id, b.id, DIPLOMACY.standing.trade);
+          events.push(diplomacy(tick, "trade", a, b, where));
+        }
+      }
+    }
+    return events;
   };
 
   // --- Step 3: faction actions ----------------------------------------------
@@ -599,7 +880,12 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     for (const sysId of [...reach].sort(byId)) {
       for (const wid of world.systems[sysId].worldIds) {
         const ownerId = owner.get(wid);
-        if (ownerId && ownerId !== faction.id && !collapsed.has(ownerId)) {
+        if (
+          ownerId &&
+          ownerId !== faction.id &&
+          !collapsed.has(ownerId) &&
+          !atPeace(faction.id, ownerId) // a pact spares its holdings from open war
+        ) {
           targets.push(world.worlds[wid]);
         }
       }
@@ -610,6 +896,41 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
           strength(world.factions[owner.get(b.id)!]) || byId(a.id, b.id),
     );
     return targets;
+  };
+
+  /**
+   * A pact partner's holding an aggressor may betray, if any (issue #24).
+   * Betrayal tempts only a sufficiently aggressive power whose pact has already
+   * soured (standing at or below the betrayal line) and which clearly outweighs
+   * its mark — then a single rng roll decides whether faith breaks this cycle.
+   * Returns the weakest such holding to seize, or null if no betrayal is on the
+   * table. The caller dissolves the pact and announces the treachery.
+   */
+  const betrayalTarget = (
+    faction: Faction,
+    owner: Map<string, string>,
+  ): World | null => {
+    if (aggressionOf(faction) < DIPLOMACY.aggressorFloor) return null;
+    const reach = reachableSystems(faction);
+    const marks: World[] = [];
+    for (const sysId of [...reach].sort(byId)) {
+      for (const wid of world.systems[sysId].worldIds) {
+        const ownerId = owner.get(wid);
+        if (!ownerId || ownerId === faction.id || collapsed.has(ownerId)) continue;
+        if (!atPeace(faction.id, ownerId)) continue; // betrayal is of a pact partner
+        if (standingOf(faction.id, ownerId) > DIPLOMACY.betrayalStanding) continue;
+        const edge = strength(world.factions[ownerId]) * DIPLOMACY.betrayalEdge;
+        if (strength(faction) < edge) continue;
+        marks.push(world.worlds[wid]);
+      }
+    }
+    if (marks.length === 0 || !rng.bool(DIPLOMACY.chance.betrayal)) return null;
+    marks.sort(
+      (a, b) =>
+        strength(world.factions[owner.get(a.id)!]) -
+          strength(world.factions[owner.get(b.id)!]) || byId(a.id, b.id),
+    );
+    return marks[0];
   };
 
   const canAfford = (
@@ -628,26 +949,25 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   const chooseAction = (
     faction: Faction,
     owner: Map<string, string>,
-  ): { kind: ActionKind; target?: World } => {
+  ): { kind: ActionKind; target?: World; betrayal?: boolean } => {
     const r = faction.resources;
     const colonize = colonizeTargets(faction, owner);
     const war = warTargets(faction, owner);
     const canColonize = colonize.length > 0 && canAfford(faction, COST.colonize);
     const canWar = war.length > 0 && canAfford(faction, COST.war);
 
-    // Boiling-over tension forces a strike even on a faction that would rather
-    // rest — peace between rivals is temporary, not a permanent equilibrium.
     if (canAfford(faction, COST.war)) {
+      // Boiling-over tension forces a strike even on a faction that would rather
+      // rest — peace between rivals is temporary, not a permanent equilibrium.
       const grudge = tensionWarTarget(faction, owner);
       if (grudge) return { kind: "WAR", target: grudge };
+      // A soured pact may tempt an aggressor into an opportunistic betrayal.
+      const mark = betrayalTarget(faction, owner);
+      if (mark) return { kind: "WAR", target: mark, betrayal: true };
     }
 
     // A faction stretched thin recovers before it overreaches further.
-    const strained =
-      r.influence < CRISIS_THRESHOLD ||
-      r.population < 30 ||
-      (r.energy < CRISIS_THRESHOLD && r.materials < CRISIS_THRESHOLD);
-    if (strained) return { kind: "CONSOLIDATE" };
+    if (isStrained(faction)) return { kind: "CONSOLIDATE" };
 
     switch (faction.disposition) {
       case "expansionist":
@@ -692,7 +1012,7 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     owner: Map<string, string>,
     tick: number,
   ): WorldEvent[] => {
-    const { kind, target } = chooseAction(faction, owner);
+    const { kind, target, betrayal } = chooseAction(faction, owner);
 
     if (kind === "CONSOLIDATE") {
       const r = faction.resources;
@@ -713,6 +1033,17 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
 
     if (kind === "WAR" && target) {
       const defender = world.factions[owner.get(target.id)!];
+      const events: WorldEvent[] = [];
+
+      // A betrayal breaks faith first, then strikes: dissolve the pact and let
+      // the broken word read before the assault it opens (issue #24).
+      if (betrayal) {
+        pacts.delete(pairKey(faction.id, defender.id));
+        events.push(
+          diplomacy(tick, "betrayal", faction, defender, world.systems[target.systemId]),
+        );
+      }
+
       pay(faction, COST.war);
 
       // Capture odds weigh the attacker against the defender, who fights from
@@ -734,10 +1065,14 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       settleResources(faction);
       settleResources(defender);
       ventTension(faction.id, defender.id);
+      // Fighting sours the combatants' standing sharply, win or lose, so a war
+      // deepens the rivalry that drives the next clash (issue #24).
+      adjustStanding(faction.id, defender.id, -RELATIONS.clashBlow);
       // Place this clash within the ongoing war so the dispatch can read as a
       // campaign rather than an isolated skirmish (issue #20).
       const campaign = recordClash(faction.id, defender.id, tick);
-      return [conflict(tick, faction, defender, target, captured, campaign)];
+      events.push(conflict(tick, faction, defender, target, captured, campaign));
+      return events;
     }
 
     return [];
@@ -800,7 +1135,13 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       if (!reason) continue;
 
       const predecessor = leader;
-      faction.leader = generateLeader(rng, faction.disposition, tick);
+      // A turnover installs a *new* person: re-draw on the rare name collision so
+      // the chronicle never reads "X passed; X took up the mantle".
+      let successor = generateLeader(rng, faction.disposition, tick);
+      while (successor.name === predecessor.name) {
+        successor = generateLeader(rng, faction.disposition, tick);
+      }
+      faction.leader = successor;
       events.push(
         leadershipChange(
           tick,
@@ -864,6 +1205,16 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     // 2b. Bordering rivals grow more restive; high tension boils into war below.
     accrueTension();
 
+    // 2c. Relations drift beneath the surface: bordering powers sour by their
+    //     aggression, shared rivals warm toward each other, and standing pacts
+    //     build trust — the slow politics that diplomacy then acts on.
+    driftRelations();
+
+    // 2d. Diplomacy: acquainted pairs may strike a pact, forge or deepen an
+    //     alliance, sue for peace, trade, or issue threats — at most one move
+    //     each, gated so the politics reads as an occasional beat (issue #24).
+    events.push(...runDiplomacy(t));
+
     // 3. Each faction takes one action toward its goal. Ownership is tracked
     //    live so a world taken early in the tick is seen as held later in it.
     const owner = buildOwnership();
@@ -909,5 +1260,15 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
     tick,
     getTick: () => currentTick,
     getStatus: () => conclusion,
+    getRelations: () => {
+      const out: RelationSnapshot[] = [];
+      for (const [key, s] of standing) {
+        const [a, b] = key.split("|");
+        const pact = pacts.get(key);
+        out.push({ a, b, standing: s, pact, stance: stanceFor(s, pact) });
+      }
+      out.sort((x, y) => byId(x.a, y.a) || byId(x.b, y.b));
+      return out;
+    },
   };
 }

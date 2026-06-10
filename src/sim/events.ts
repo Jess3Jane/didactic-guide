@@ -29,8 +29,9 @@ import type {
 // --- Event model -------------------------------------------------------------
 
 /**
- * The event vocabulary. Phase 2 adds `WORLD_FORTUNE` (issue #19) and
- * `SECTOR_CONCLUDED` (issue #22), the terminal dispatch that closes a history.
+ * The event vocabulary. Phase 2 adds `WORLD_FORTUNE` (issue #19),
+ * `SECTOR_CONCLUDED` (issue #22), and `DIPLOMACY` (issue #24) — the political
+ * beats between powers: pacts, alliances, peace, trade, threats, and betrayal.
  */
 export type WorldEventType =
   | "FACTION_FOUNDED"
@@ -41,6 +42,7 @@ export type WorldEventType =
   | "FACTION_COLLAPSED"
   | "WORLD_FORTUNE"
   | "LEADERSHIP_CHANGE"
+  | "DIPLOMACY"
   | "SECTOR_CONCLUDED";
 
 /** Which stockpile a crisis concerns. Mirrors the keys of `Resources`. */
@@ -67,6 +69,22 @@ export type FortuneKind = "discovery" | "depletion" | "disaster";
  * distinct, legible transition in the chronicle.
  */
 export type LeadershipChange = "succession" | "coup" | "ascension";
+
+/**
+ * A political move between two powers (issue #24). `pact` — a non-aggression
+ * pact; `alliance` — a warmer bond formed or upgraded into; `peace` — a war
+ * laid down; `trade` — an accord that enriches both and warms relations;
+ * `threat` — coercion that sours them toward rivalry; `betrayal` — a standing
+ * pact broken in the act of attacking. Each reads as a distinct beat in the
+ * chronicle's politics.
+ */
+export type DiplomacyKind =
+  | "pact"
+  | "alliance"
+  | "peace"
+  | "trade"
+  | "threat"
+  | "betrayal";
 
 /**
  * A prose-ready snapshot of a leader (issue #23). Like `EntityRef`, the name and
@@ -187,6 +205,17 @@ export interface LeadershipChangeEvent extends EventBase {
 }
 
 /**
+ * A political move between two powers (issue #24). `actors[0]` is the initiator
+ * (for a `threat` the coercer, for a `betrayal` the one breaking faith), led by
+ * `leader`; `actors[1]` is the other party. `location`, when present, is the
+ * frontier system through which they deal.
+ */
+export interface DiplomacyEvent extends EventBase {
+  type: "DIPLOMACY";
+  data: { kind: DiplomacyKind; leader: LeaderRef };
+}
+
+/**
  * The history reaches its end (issue #22). For a `unified` outcome the lone
  * surviving faction is `actors[0]`; a `dark` outcome names no one.
  */
@@ -205,6 +234,7 @@ export type WorldEvent =
   | FactionCollapsedEvent
   | WorldFortuneEvent
   | LeadershipChangeEvent
+  | DiplomacyEvent
   | SectorConcludedEvent;
 
 /** Every event type, handy for iteration (tests, future filtering). */
@@ -217,6 +247,7 @@ export const EVENT_TYPES: readonly WorldEventType[] = [
   "FACTION_COLLAPSED",
   "WORLD_FORTUNE",
   "LEADERSHIP_CHANGE",
+  "DIPLOMACY",
   "SECTOR_CONCLUDED",
 ] as const;
 
@@ -490,6 +521,46 @@ export function describe(event: WorldEvent): string {
       return pickVariant(event, byReason[reason])();
     }
 
+    case "DIPLOMACY": {
+      const a = event.actors[0].name;
+      const b = event.actors[1].name;
+      const lead = styled(event.data.leader);
+      const where = event.location ? ` along the ${event.location.name} frontier` : "";
+      const byKind: Record<DiplomacyKind, (() => string)[]> = {
+        pact: [
+          () => `The ${a} and the ${b} signed a non-aggression pact${where}.`,
+          () => `${lead} of the ${a} stayed the sword, pledging non-aggression with the ${b}.`,
+          () => `A wary truce took hold as the ${a} and the ${b} swore off hostilities${where}.`,
+        ],
+        alliance: [
+          () => `The ${a} and the ${b} forged an alliance${where}.`,
+          () => `${lead} bound the ${a} to the ${b} in alliance.`,
+          () => `Old ties deepened: the ${a} and the ${b} stood as allies.`,
+        ],
+        peace: [
+          () => `The ${a} and the ${b} laid down their war and made peace${where}.`,
+          () => `${lead} of the ${a} sued for peace, and the ${b} took the offered hand.`,
+          () => `Exhausted by the fighting, the ${a} and the ${b} agreed a ceasefire.`,
+        ],
+        trade: [
+          () => `The ${a} and the ${b} struck a trade accord, to the profit of both${where}.`,
+          () => `Goods flowed between the ${a} and the ${b} under a new accord.`,
+          () => `${lead} opened the lanes of the ${a} to the ${b}, and commerce flourished.`,
+        ],
+        threat: [
+          () => `${lead} of the ${a} rattled the sabre at the ${b}${where}.`,
+          () => `The ${a} issued an ultimatum to the ${b}, souring the peace.`,
+          () => `Threats from the ${a} put the ${b} on notice${where}.`,
+        ],
+        betrayal: [
+          () => `Breaking its pact, the ${a} turned on the ${b}${where}.`,
+          () => `${lead} of the ${a} cast aside its word and struck the ${b}.`,
+          () => `Treachery: the ${a} shattered its pact and fell upon the ${b}.`,
+        ],
+      };
+      return pickVariant(event, byKind[event.data.kind])();
+    }
+
     case "SECTOR_CONCLUDED": {
       if (event.data.outcome === "unified") {
         const victor = event.actors[0]?.name ?? "a lone power";
@@ -682,6 +753,28 @@ export function leadershipChange(
       successor: leaderRef(faction.leader),
       tenure,
     },
+  });
+}
+
+/**
+ * A political move between two powers (issue #24). `initiator` is the actor
+ * driving it (the coercer of a threat, the betrayer of a betrayal); its leader
+ * is named in the dispatch. `system`, when given, is the frontier they deal
+ * across.
+ */
+export function diplomacy(
+  tick: number,
+  kind: DiplomacyKind,
+  initiator: Faction,
+  other: Faction,
+  system?: StarSystem,
+): DiplomacyEvent {
+  return withSummary<DiplomacyEvent>({
+    type: "DIPLOMACY",
+    tick,
+    actors: [ref(initiator), ref(other)],
+    location: system ? ref(system) : undefined,
+    data: { kind, leader: leaderRef(initiator.leader) },
   });
 }
 

@@ -12,7 +12,12 @@
 //      the DOM, newest first, capping how many it keeps so a long run stays
 //      responsive.
 
-import type { FortuneKind, WorldEvent, WorldEventType } from "../sim/events";
+import type {
+  DiplomacyKind,
+  FortuneKind,
+  WorldEvent,
+  WorldEventType,
+} from "../sim/events";
 
 // --- View model --------------------------------------------------------------
 
@@ -29,6 +34,7 @@ export type DispatchCategory =
   | "contact"
   | "collapse"
   | "leadership"
+  | "diplomacy"
   | "conclusion";
 
 /** The render-ready shape of a single dispatch. Pure data — no DOM. */
@@ -62,6 +68,9 @@ const TYPE_META: Record<
   // are resolved per-event in `toDispatch`, not from this static table.
   WORLD_FORTUNE: { kind: "Fortune", category: "crisis" },
   LEADERSHIP_CHANGE: { kind: "Leadership", category: "leadership" },
+  // Placeholder; DIPLOMACY's label + colour vary by its kind and are resolved
+  // per-event in `toDispatch`, not from this static table.
+  DIPLOMACY: { kind: "Diplomacy", category: "diplomacy" },
   SECTOR_CONCLUDED: { kind: "Epilogue", category: "conclusion" },
 };
 
@@ -76,6 +85,23 @@ const FORTUNE_META: Record<
 };
 
 /**
+ * Per-diplomacy-kind label + category. Most political beats share the calm
+ * `diplomacy` accent; a `threat` or `betrayal` is a hostile turn and borrows
+ * the `conflict` red so the feed reads the souring at a glance.
+ */
+const DIPLOMACY_META: Record<
+  DiplomacyKind,
+  { kind: string; category: DispatchCategory }
+> = {
+  pact: { kind: "Pact", category: "diplomacy" },
+  alliance: { kind: "Alliance", category: "diplomacy" },
+  peace: { kind: "Peace", category: "diplomacy" },
+  trade: { kind: "Trade", category: "diplomacy" },
+  threat: { kind: "Ultimatum", category: "conflict" },
+  betrayal: { kind: "Betrayal", category: "conflict" },
+};
+
+/**
  * Project a `WorldEvent` onto its render-ready `Dispatch`.
  *
  * Pure and DOM-free: it only reads fields the event already carries (including
@@ -86,7 +112,9 @@ export function toDispatch(event: WorldEvent): Dispatch {
   const meta =
     event.type === "WORLD_FORTUNE"
       ? FORTUNE_META[event.data.fortune]
-      : TYPE_META[event.type];
+      : event.type === "DIPLOMACY"
+        ? DIPLOMACY_META[event.data.kind]
+        : TYPE_META[event.type];
   return {
     cycle: event.tick,
     kind: meta.kind,
