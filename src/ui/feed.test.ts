@@ -5,6 +5,9 @@ import {
   factionFounded,
   worldColonized,
   conflict,
+  warDeclared,
+  warEnded,
+  diplomacy,
   resourceCrisis,
   firstContact,
   factionCollapsed,
@@ -12,9 +15,19 @@ import {
   leadershipChange,
   factionDoctrine,
   sectorConcluded,
+  EVENT_TYPES,
+  type DiplomacyKind,
+  type FortuneKind,
   type WorldEvent,
+  type WorldEventType,
 } from "../sim/events";
-import { createFeed, toDispatch } from "./feed";
+import type { PostureShift } from "../sim/posture";
+import {
+  CATEGORY_FILTER_LABEL,
+  CATEGORY_ORDER,
+  createFeed,
+  toDispatch,
+} from "./feed";
 
 // --- Fixtures ----------------------------------------------------------------
 // The feed only reads id/name/disposition off the domain objects, so minimal
@@ -113,6 +126,36 @@ group("toDispatch", () => {
   it("leaves location undefined when the event carries none", () => {
     const d = toDispatch(factionCollapsed(9, iron));
     expect(d.location).toBeUndefined();
+  });
+
+  it("files a war's whole arc under conflict — ultimatum through peace (#42)", () => {
+    expect(toDispatch(diplomacy(1, "threat", iron, helion)).category).toBe(
+      "conflict",
+    );
+    expect(toDispatch(warDeclared(2, iron, helion)).category).toBe("conflict");
+    expect(toDispatch(conflict(3, iron, helion, vex, false)).category).toBe(
+      "conflict",
+    );
+    expect(toDispatch(diplomacy(4, "betrayal", iron, helion)).category).toBe(
+      "conflict",
+    );
+    expect(
+      toDispatch(warEnded(5, helion, iron, "repelled", 2, 3)).category,
+    ).toBe("conflict");
+
+    // A negotiated peace closes the arc, so it filters with the war — but it
+    // is good news, so it keeps the calm diplomacy accent rather than red.
+    const peace = toDispatch(diplomacy(6, "peace", iron, helion));
+    expect(peace.category).toBe("conflict");
+    expect(peace.accent).toBe("diplomacy");
+
+    // Peacetime diplomacy stays out of the war arc.
+    expect(toDispatch(diplomacy(7, "trade", iron, helion)).category).toBe(
+      "diplomacy",
+    );
+    expect(toDispatch(diplomacy(8, "pact", iron, helion)).category).toBe(
+      "diplomacy",
+    );
   });
 
   it("colours WORLD_FORTUNE by its kind — discovery is good news", () => {
@@ -376,6 +419,30 @@ group("feed filtering", () => {
     expect(visibleCycles(feed)).toEqual([2, 1]);
   });
 
+  it("shows a war's full arc under the Conflict filter (#42)", () => {
+    const feed = createFeed();
+    feed.push([worldColonized(0, helion, vex)]);
+    feed.push([diplomacy(1, "threat", iron, helion)]);
+    feed.push([warDeclared(2, iron, helion)]);
+    feed.push([conflict(3, iron, helion, vex, false)]);
+    feed.push([diplomacy(4, "trade", iron, helion)]);
+    feed.push([diplomacy(5, "peace", iron, helion)]);
+
+    choose(typeFilter(feed), "conflict");
+    // Ultimatum, declaration, clash, and the closing peace — nothing missing;
+    // the colonization and the trade accord stay out.
+    expect(visibleCycles(feed)).toEqual([5, 3, 2, 1]);
+
+    // The peace dispatch filters as conflict but keeps its calm accent.
+    const peaceNode = feed.element.querySelector<HTMLElement>(
+      '.dispatch[data-category="conflict"].dispatch--diplomacy',
+    );
+    expect(peaceNode).not.toBeNull();
+    expect(peaceNode!.querySelector(".dispatch__kind")!.textContent).toBe(
+      "Peace",
+    );
+  });
+
   it("resets the filter vocabulary on a fresh sector", () => {
     const feed = createFeed();
     feed.push([factionFounded(0, helion, helionHome)]);
@@ -386,5 +453,84 @@ group("feed filtering", () => {
     expect(factionFilter(feed).value).toBe("");
     expect(optionValues(factionFilter(feed))).toEqual(["", "Iron Dominion"]);
     expect(visibleCycles(feed)).toEqual([0]);
+  });
+});
+
+// --- Filter-category exhaustiveness (issue #42) --------------------------------
+//
+// The Conflict filter missed events because a diplomacy kind sat in the wrong
+// category — a gap nothing enforced. These samples are keyed by the sim's own
+// unions (`WorldEventType`, `DiplomacyKind`, …), so adding a new event type or
+// kind without deciding its filter category fails to *compile* here, and the
+// test then checks each maps to exactly one category the dropdown offers.
+
+const DIPLOMACY_SAMPLES: Record<DiplomacyKind, WorldEvent> = {
+  pact: diplomacy(0, "pact", helion, iron),
+  alliance: diplomacy(0, "alliance", helion, iron),
+  peace: diplomacy(0, "peace", helion, iron),
+  trade: diplomacy(0, "trade", helion, iron),
+  threat: diplomacy(0, "threat", helion, iron),
+  betrayal: diplomacy(0, "betrayal", helion, iron),
+};
+
+const FORTUNE_SAMPLES: Record<FortuneKind, WorldEvent> = {
+  discovery: worldFortune(0, helion, vex, "discovery"),
+  depletion: worldFortune(0, helion, vex, "depletion"),
+  disaster: worldFortune(0, helion, vex, "disaster"),
+};
+
+const DOCTRINE_SAMPLES: Record<PostureShift, WorldEvent> = {
+  defensive: factionDoctrine(0, helion, "defensive"),
+  hegemonic: factionDoctrine(0, helion, "hegemonic"),
+};
+
+const SAMPLES_BY_TYPE: Record<WorldEventType, readonly WorldEvent[]> = {
+  FACTION_FOUNDED: [factionFounded(0, helion, helionHome)],
+  WORLD_COLONIZED: [worldColonized(0, helion, vex)],
+  WAR_DECLARED: [warDeclared(0, iron, helion)],
+  CONFLICT: [conflict(0, iron, helion, vex, true)],
+  WAR_ENDED: [warEnded(0, helion, iron, "repelled", 0, 1)],
+  RESOURCE_CRISIS: [resourceCrisis(0, helion, "energy")],
+  FIRST_CONTACT: [firstContact(0, helion, iron)],
+  FACTION_COLLAPSED: [factionCollapsed(0, iron)],
+  WORLD_FORTUNE: Object.values(FORTUNE_SAMPLES),
+  LEADERSHIP_CHANGE: [
+    leadershipChange(
+      0,
+      helion,
+      "succession",
+      { name: "Old Hand", title: "Prefect", trait: "stoic", since: 0 },
+      6,
+    ),
+  ],
+  DIPLOMACY: Object.values(DIPLOMACY_SAMPLES),
+  FACTION_DOCTRINE: Object.values(DOCTRINE_SAMPLES),
+  SECTOR_CONCLUDED: [
+    sectorConcluded(0, "unified", helion),
+    sectorConcluded(0, "dark"),
+  ],
+};
+
+group("filter category exhaustiveness (#42)", () => {
+  it("maps every event type and kind to exactly one offered category", () => {
+    for (const type of EVENT_TYPES) {
+      const samples = SAMPLES_BY_TYPE[type];
+      expect(samples.length).toBeGreaterThan(0);
+      for (const event of samples) {
+        const d = toDispatch(event);
+        // Exactly one category, and one the filter dropdown actually offers.
+        expect(CATEGORY_ORDER.filter((c) => c === d.category)).toHaveLength(1);
+        expect(CATEGORY_FILTER_LABEL[d.category]).toBeTruthy();
+        // The accent must be a styled category too, or the dispatch loses
+        // its colour silently.
+        expect(CATEGORY_ORDER).toContain(d.accent);
+      }
+    }
+  });
+
+  it("labels every category the filter can offer", () => {
+    expect([...CATEGORY_ORDER].sort()).toEqual(
+      Object.keys(CATEGORY_FILTER_LABEL).sort(),
+    );
   });
 });
