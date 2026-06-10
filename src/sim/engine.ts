@@ -390,6 +390,46 @@ const ABANDON = {
   fallow: 25,
 } as const;
 
+// --- Phase 3: taming the economic static (issue #40) --------------------------
+//
+// The Phase 2 long tail was four event types on loop: discovery / depletion /
+// disaster / trade were 76% of one calibration run, with the same world
+// ping-ponging between boom and bust and the same two factions "striking a
+// trade accord" 27 times with no memory of the last one. Two memories quiet
+// the churn without flattening the economy:
+//   - *worlds rest between turns of fortune*, and a played-out world falls
+//     economically silent until a fresh discovery re-lights it — so the same
+//     handful of worlds stops alternating forever;
+//   - *trade has a history*: a pair's accords progress (first → renewals → a
+//     standing partnership) and then flow quietly, with only a long lapse and
+//     resumption making news again — routine commerce still moves resources,
+//     it just stops repeating itself in the feed.
+
+/** Boom and bust breathe on an era scale, not a flicker. */
+const FORTUNE = {
+  /**
+   * Cycles a world rests after its fortunes turn before they can turn again.
+   * This is what stops one world's discovery/depletion ping-pong: each turn of
+   * fortune is an event in a story, not one frame of a strobe.
+   */
+  cooldown: 12,
+} as const;
+
+/** Trade with memory: a pair's accords go somewhere instead of resetting. */
+const TRADE = {
+  /**
+   * The accord that matures a relationship into a standing partnership. From
+   * then on the pair's commerce flows quietly — resources and standing still
+   * move each time, but the feed hears nothing until the relationship lapses.
+   */
+  deepenAt: 4,
+  /**
+   * Cycles without commerce after which a relationship has lapsed; the next
+   * accord reads as trade resumed, and the arc starts over.
+   */
+  lapse: 30,
+} as const;
+
 /**
  * Wars and colonies *of choice* are launched from strength (issue #39): the
  * actor must keep at least this much population in reserve after paying the
@@ -569,6 +609,19 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   // gated on a pact's age — every negotiated peace gets its era before it can fray.
   const pactSince = new Map<string, number>();
 
+  // --- Economic memory (issue #40) ---
+  // The cycle each world's fortunes may next turn: a world that just boomed or
+  // busted rests before it can turn again, so the chronicle stops strobing.
+  const fortuneRest = new Map<string, number>();
+  // Per-world count of each fortune kind, so a repeat reads as the next beat
+  // of that world's boom-and-bust story ("its third bust") rather than the
+  // first find every time.
+  const fortuneCounts = new Map<string, Record<FortuneKind, number>>();
+  // Per acquainted pair, the running trade relationship: how many accords it
+  // has seen and when the last was struck. Drives the first → renewal →
+  // standing-partnership progression (and lapse detection) of resolveTrade.
+  const trades = new Map<string, { count: number; last: number }>();
+
   // --- Destabilizer memory (issue #39) ---
   // Per-faction count of troubled cycles (active crisis or defensive footing),
   // climbing while the trouble is visible and bleeding away in quiet times; at
@@ -746,23 +799,41 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
    * Discoveries enrich, depletion erodes, disasters wound (hazard up, garrison
    * population down) — keeping yields, crises, and pressure in motion across a
    * long run. One world per faction may turn per cycle, chosen via the rng.
+   *
+   * Tamed for issue #40: a world that just turned rests for a spell before it
+   * can turn again, a discovery on an already-saturated world or a depletion on
+   * a played-out one passes silently (there is nothing left to find or lose),
+   * and the depletion that empties a world's reserves reads as exhaustion —
+   * the arc's end — rather than one more interchangeable bust.
    */
   const driftWorlds = (tick: number): WorldEvent[] => {
     const events: WorldEvent[] = [];
     for (const faction of living()) {
       if (faction.ownedWorldIds.length === 0) continue;
       if (!rng.bool(DRIFT.chancePerFaction)) continue;
-      const held = faction.ownedWorldIds.slice().sort(byId);
+      // Worlds whose fortunes turned recently sit this draw out (issue #40).
+      const held = faction.ownedWorldIds
+        .filter((wid) => (fortuneRest.get(wid) ?? 0) <= tick)
+        .sort(byId);
+      if (held.length === 0) continue;
       const w = world.worlds[held[rng.int(0, held.length - 1)]];
       const fortune = rollFortune();
 
+      let exhausted = false;
       if (fortune === "discovery") {
+        // Nothing left to find on a world already at peak richness: silent.
+        if (w.resourceRichness >= 1) continue;
         w.resourceRichness = clamp01(w.resourceRichness + span(DRIFT.richnessSwing));
       } else if (fortune === "depletion") {
+        // A played-out world cannot deplete further; it stays quiet until a
+        // discovery re-lights it.
+        if (w.resourceRichness <= DRIFT.richnessFloor) continue;
         w.resourceRichness = Math.max(
           DRIFT.richnessFloor,
           clamp01(w.resourceRichness - span(DRIFT.richnessSwing)),
         );
+        // The bust that empties the reserves is the story's terminal beat.
+        exhausted = w.resourceRichness <= DRIFT.richnessFloor;
       } else {
         w.hazard = clamp01(w.hazard + span(DRIFT.disasterHazard));
         // A disaster scatters part of the holding faction's population.
@@ -770,7 +841,15 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         settleResources(faction);
       }
 
-      events.push(worldFortune(tick, faction, w, fortune));
+      fortuneRest.set(w.id, tick + FORTUNE.cooldown);
+      const counts = fortuneCounts.get(w.id) ?? {
+        discovery: 0,
+        depletion: 0,
+        disaster: 0,
+      };
+      counts[fortune] += 1;
+      fortuneCounts.set(w.id, counts);
+      events.push(worldFortune(tick, faction, w, fortune, counts[fortune], exhausted));
     }
     return events;
   };
@@ -985,6 +1064,59 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   };
 
   /**
+   * Resolve a trade between partners with memory of the accords before it
+   * (issue #40). The economics always land — both sides enriched, standing
+   * warmed — but the dispatch depends on where the relationship stands: a
+   * first accord and each renewal make news, the accord that matures the pair
+   * into a standing partnership both makes news and (if none stands) seals a
+   * non-aggression pact — long commerce becomes peace — and from then on the
+   * pair's commerce flows *quietly*: routine economics tick without a
+   * dispatch, until a long lapse makes the resumption itself the story.
+   * Returns the dispatch this accord warrants, or null for settled commerce.
+   */
+  const resolveTrade = (
+    a: Faction,
+    b: Faction,
+    where: StarSystem | undefined,
+    tick: number,
+  ): WorldEvent | null => {
+    applyTrade(a, b);
+    adjustStanding(a.id, b.id, DIPLOMACY.standing.trade);
+    const key = pairKey(a.id, b.id);
+    const rec = trades.get(key);
+    if (!rec) {
+      trades.set(key, { count: 1, last: tick });
+      return diplomacy(tick, "trade", a, b, where);
+    }
+    const lapsed = tick - rec.last > TRADE.lapse;
+    rec.last = tick;
+    if (lapsed) {
+      // A dormant relationship taken up again restarts its arc.
+      rec.count = 1;
+      return diplomacy(tick, "trade", a, b, where, { phase: "resumption", count: 1 });
+    }
+    rec.count += 1;
+    if (rec.count < TRADE.deepenAt) {
+      return diplomacy(tick, "trade", a, b, where, {
+        phase: "renewal",
+        count: rec.count,
+      });
+    }
+    if (rec.count === TRADE.deepenAt) {
+      // Long commerce formalizes the peace it has in practice kept.
+      if (!pacts.has(key)) {
+        pacts.set(key, "nonaggression");
+        pactSince.set(key, tick);
+      }
+      return diplomacy(tick, "trade", a, b, where, {
+        phase: "deepening",
+        count: rec.count,
+      });
+    }
+    return null; // a standing partnership trades without ceremony
+  };
+
+  /**
    * Resolve at most one diplomatic move per acquainted, living pair this cycle.
    * Moves are chosen by circumstance and gated by per-cycle odds, so politics
    * stays an occasional beat rather than noise. Effects are symmetric, but each
@@ -1074,9 +1206,8 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
             adjustStanding(a.id, b.id, DIPLOMACY.standing.alliance);
             events.push(diplomacy(tick, "alliance", a, b, where));
           } else if (rng.bool(DIPLOMACY.chance.trade)) {
-            applyTrade(a, b);
-            adjustStanding(a.id, b.id, DIPLOMACY.standing.trade);
-            events.push(diplomacy(tick, "trade", a, b, where));
+            const accord = resolveTrade(a, b, where, tick);
+            if (accord) events.push(accord);
           }
           continue;
         }
@@ -1108,9 +1239,8 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
           tension.set(key, (tension.get(key) ?? 0) + DIPLOMACY.threatTension);
           events.push(diplomacy(tick, "threat", coercer, target, where));
         } else if (s > 0 && healthy && rng.bool(DIPLOMACY.chance.trade)) {
-          applyTrade(a, b);
-          adjustStanding(a.id, b.id, DIPLOMACY.standing.trade);
-          events.push(diplomacy(tick, "trade", a, b, where));
+          const accord = resolveTrade(a, b, where, tick);
+          if (accord) events.push(accord);
         }
       }
     }
