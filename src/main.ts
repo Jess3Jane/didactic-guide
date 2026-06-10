@@ -3,6 +3,7 @@ import { createRng } from "./sim/rng";
 import { generateSector } from "./sim/world";
 import { createEngine, type Engine } from "./sim/engine";
 import { createFeed } from "./ui/feed";
+import { createSectorMap } from "./ui/map";
 import { createControls, randomSeed } from "./ui/controls";
 
 // Phase 1 wiring (issue #7). This is the one place `sim/` and `ui/` meet
@@ -21,6 +22,7 @@ if (app) {
   `;
 
   const feed = createFeed();
+  const map = createSectorMap();
 
   // The live engine for the current seed. Rebuilt from scratch on every
   // "Generate" so a seed always starts the same world from cycle 0.
@@ -32,6 +34,8 @@ if (app) {
     const sector = generateSector(rng, { seed });
     engine = createEngine(sector, rng);
     feed.reset(engine.foundingEvents);
+    // Bind the map to the engine's live sector; it reads, never mutates.
+    map.reset(engine.sector);
   };
 
   const controls = createControls({
@@ -39,6 +43,8 @@ if (app) {
       if (!engine) return { cycle: 0, dispatches: 0 };
       const events = engine.tick();
       feed.push(events);
+      // Repaint territory after the tick mutates ownership.
+      map.update();
       // Report the cycle and event count so the controls can show time passing
       // (and flag quiet cycles); surface a concluded run as an explicit end so
       // the loop stops deliberately rather than ticking on in silence.
@@ -57,8 +63,8 @@ if (app) {
     onGenerate: generate,
   });
 
-  // Controls above the chronicle they drive.
-  app.append(controls.element, feed.element);
+  // Controls above the map, with the chronicle they both drive below.
+  app.append(controls.element, map.element, feed.element);
 
   // Open on a fresh random sector so the page never loads empty.
   const initialSeed = randomSeed();
