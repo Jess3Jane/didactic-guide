@@ -65,7 +65,9 @@ const TYPE_META: Record<
 > = {
   FACTION_FOUNDED: { kind: "Founding", category: "founding" },
   WORLD_COLONIZED: { kind: "Colonization", category: "expansion" },
+  WAR_DECLARED: { kind: "War Declared", category: "conflict" },
   CONFLICT: { kind: "Conflict", category: "conflict" },
+  WAR_ENDED: { kind: "War's End", category: "conflict" },
   RESOURCE_CRISIS: { kind: "Crisis", category: "crisis" },
   FIRST_CONTACT: { kind: "First Contact", category: "contact" },
   FACTION_COLLAPSED: { kind: "Collapse", category: "collapse" },

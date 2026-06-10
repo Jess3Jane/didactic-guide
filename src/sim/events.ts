@@ -30,13 +30,17 @@ import type {
 
 /**
  * The event vocabulary. Phase 2 adds `WORLD_FORTUNE` (issue #19),
- * `SECTOR_CONCLUDED` (issue #22), and `DIPLOMACY` (issue #24) — the political
- * beats between powers: pacts, alliances, peace, trade, threats, and betrayal.
+ * `SECTOR_CONCLUDED` (issue #22), `DIPLOMACY` (issue #24) — the political beats
+ * between powers — and the `WAR_DECLARED`/`WAR_ENDED` bookends (issue #24) that
+ * frame a multi-cycle war as one arc: declared, fought across many clashes, and
+ * brought to a decisive end.
  */
 export type WorldEventType =
   | "FACTION_FOUNDED"
   | "WORLD_COLONIZED"
+  | "WAR_DECLARED"
   | "CONFLICT"
+  | "WAR_ENDED"
   | "RESOURCE_CRISIS"
   | "FIRST_CONTACT"
   | "FACTION_COLLAPSED"
@@ -85,6 +89,25 @@ export type DiplomacyKind =
   | "trade"
   | "threat"
   | "betrayal";
+
+/**
+ * How a clash sat within its multi-cycle war (issue #24). A war is fought as a
+ * moving front, not a single roll: `advance` is ground gained with the target
+ * world still in enemy hands, `breakthrough` is the front finally cracking and
+ * the world changing hands, and `repulse` is the assault thrown back. So a world
+ * falls only after the attacker has pressed an `advance` (often several) into a
+ * `breakthrough` — legible progression rather than an instant flip.
+ */
+export type ConflictPush = "advance" | "breakthrough" | "repulse";
+
+/**
+ * How a war ended decisively (issue #24). `conquest` — the aggressor broke its
+ * foe, taking the contested front (and often the last of its worlds);
+ * `repelled` — the defender held until the aggressor's offensive collapsed.
+ * Wars also end by negotiated `peace`, but that is carried as a `DIPLOMACY`
+ * event; `WarOutcome` covers only the two battlefield resolutions.
+ */
+export type WarOutcome = "conquest" | "repelled";
 
 /**
  * A prose-ready snapshot of a leader (issue #23). Like `EntityRef`, the name and
@@ -151,11 +174,43 @@ export interface Campaign {
 /**
  * Two factions contest a world; `captured` records whether it changed hands.
  * `campaign` carries the war's running context (issue #20) when this is part of
- * an ongoing conflict.
+ * an ongoing conflict, and `push` (issue #24) how the clash moved the front —
+ * `advance` and `breakthrough` are attacker wins (`captured` is true only for a
+ * `breakthrough`), `repulse` a defender hold. Omitting `push` falls back to the
+ * Phase 1 captured/held reading, so a bare clash still renders.
  */
 export interface ConflictEvent extends EventBase {
   type: "CONFLICT";
-  data: { captured: boolean; campaign?: Campaign; leader: LeaderRef };
+  data: {
+    captured: boolean;
+    campaign?: Campaign;
+    push?: ConflictPush;
+    leader: LeaderRef;
+  };
+}
+
+/**
+ * War breaks out between two powers (issue #24). `actors[0]` is the aggressor
+ * opening hostilities, led by `leader`; `actors[1]` the power it falls upon.
+ * `location`, when present, is the frontier system the war ignites along. It
+ * opens an arc that one or more `CONFLICT` clashes continue and a `WAR_ENDED`
+ * (or a negotiated `DIPLOMACY` peace) closes.
+ */
+export interface WarDeclaredEvent extends EventBase {
+  type: "WAR_DECLARED";
+  data: { leader: LeaderRef };
+}
+
+/**
+ * A war reaches a decisive battlefield end (issue #24). `actors[0]` is the
+ * victor, led by `leader`; `actors[1]` the vanquished. `outcome` is `conquest`
+ * when the aggressor broke its foe, `repelled` when the defender outlasted the
+ * offensive. `since` is the cycle the war opened and `clashes` how many battles
+ * it took — so a long campaign reads with due weight.
+ */
+export interface WarEndedEvent extends EventBase {
+  type: "WAR_ENDED";
+  data: { outcome: WarOutcome; since: number; clashes: number; leader: LeaderRef };
 }
 
 /**
@@ -228,7 +283,9 @@ export interface SectorConcludedEvent extends EventBase {
 export type WorldEvent =
   | FactionFoundedEvent
   | WorldColonizedEvent
+  | WarDeclaredEvent
   | ConflictEvent
+  | WarEndedEvent
   | ResourceCrisisEvent
   | FirstContactEvent
   | FactionCollapsedEvent
@@ -241,7 +298,9 @@ export type WorldEvent =
 export const EVENT_TYPES: readonly WorldEventType[] = [
   "FACTION_FOUNDED",
   "WORLD_COLONIZED",
+  "WAR_DECLARED",
   "CONFLICT",
+  "WAR_ENDED",
   "RESOURCE_CRISIS",
   "FIRST_CONTACT",
   "FACTION_COLLAPSED",
@@ -411,20 +470,65 @@ export function describe(event: WorldEvent): string {
         campaign && campaign.clash >= 2
           ? ` — the ${ordinal(campaign.clash)} clash of a war raging since cycle ${campaign.since}`
           : "";
-      const variants = event.data.captured
-        ? [
-            () => `The ${a} seized ${world} from the ${d}${tail}.`,
-            () => `${world} fell to the ${a}, wrested from the ${d}${tail}.`,
-            () => `The ${d} lost ${world} as the ${a} broke through${tail}.`,
-            () => `${lead} of the ${a} stormed ${world}, taking it from the ${d}${tail}.`,
-            () => `On ${lead}'s order, the ${a} wrenched ${world} from the ${d}${tail}.`,
-          ]
-        : [
-            () => `The ${d} repelled the ${a}'s assault on ${world}${tail}.`,
-            () => `The ${a}'s drive on ${world} foundered against the ${d}${tail}.`,
-            () => `${world} held firm as the ${d} threw back the ${a}${tail}.`,
-            () => `${lead}'s assault on ${world} broke against the ${d}, sparing the ${a} nothing${tail}.`,
-          ];
+      // The front moved three ways (issue #24): an `advance` gains ground without
+      // taking the world, a `breakthrough` finally cracks it, a `repulse` is
+      // thrown back. A clash with no `push` falls back to the captured/held read.
+      const flavor =
+        event.data.push ?? (event.data.captured ? "breakthrough" : "repulse");
+      const byFlavor: Record<ConflictPush, (() => string)[]> = {
+        breakthrough: [
+          () => `The ${a} seized ${world} from the ${d}${tail}.`,
+          () => `${world} fell to the ${a}, wrested from the ${d}${tail}.`,
+          () => `The ${d} lost ${world} as the ${a} broke through${tail}.`,
+          () => `${lead} of the ${a} stormed ${world}, taking it from the ${d}${tail}.`,
+          () => `On ${lead}'s order, the ${a} wrenched ${world} from the ${d}${tail}.`,
+        ],
+        advance: [
+          () => `The ${a} pressed deeper toward ${world}, but the ${d} held the line${tail}.`,
+          () => `The ${a}'s offensive ground forward at ${world}, the ${d} yielding ground${tail}.`,
+          () => `Fighting raged around ${world} as the ${a} pushed the ${d} back, the world yet unfallen${tail}.`,
+          () => `${lead}'s forces gained ground at ${world}, though it stayed in ${d} hands${tail}.`,
+        ],
+        repulse: [
+          () => `The ${d} repelled the ${a}'s assault on ${world}${tail}.`,
+          () => `The ${a}'s drive on ${world} foundered against the ${d}${tail}.`,
+          () => `${world} held firm as the ${d} threw back the ${a}${tail}.`,
+          () => `${lead}'s assault on ${world} broke against the ${d}, sparing the ${a} nothing${tail}.`,
+        ],
+      };
+      return pickVariant(event, byFlavor[flavor])();
+    }
+
+    case "WAR_DECLARED": {
+      const a = event.actors[0].name;
+      const b = event.actors[1].name;
+      const lead = styled(event.data.leader);
+      const where = event.location ? ` along the ${event.location.name} frontier` : "";
+      return pickVariant(event, [
+        () => `War broke out between the ${a} and the ${b}${where}.`,
+        () => `${lead} of the ${a} loosed the dogs of war upon the ${b}${where}.`,
+        () => `The ${a} opened hostilities against the ${b}${where}.`,
+      ])();
+    }
+
+    case "WAR_ENDED": {
+      const a = event.actors[0].name; // victor
+      const b = event.actors[1].name; // vanquished
+      const lead = styled(event.data.leader);
+      const { since, clashes } = event.data;
+      const span = clashes >= 2 ? `${clashes} clashes` : "a single clash";
+      const variants =
+        event.data.outcome === "conquest"
+          ? [
+              () => `The ${a} broke the ${b}, ending a war waged since cycle ${since}.`,
+              () => `After ${span}, the ${a} ground the ${b} into defeat.`,
+              () => `${lead} of the ${a} brought the war with the ${b} to a victorious close.`,
+            ]
+          : [
+              () => `The ${a} threw back the ${b}'s offensive, and the war guttered out after ${span}.`,
+              () => `The ${b}'s drive broke against the ${a}; their war, begun in cycle ${since}, ended in stalemate.`,
+              () => `Spent after ${span}, the ${b} abandoned its war on the ${a}.`,
+            ];
       return pickVariant(event, variants)();
     }
 
@@ -641,7 +745,9 @@ export function worldColonized(
 
 /**
  * A clash over `world`. `captured` is true when the attacker takes the world,
- * false when the defender holds.
+ * false when the defender holds. `campaign` threads it into an ongoing war
+ * (issue #20); `push` records how the front moved (issue #24) — `breakthrough`
+ * implies `captured`, `advance`/`repulse` do not.
  */
 export function conflict(
   tick: number,
@@ -650,14 +756,59 @@ export function conflict(
   world: World,
   captured: boolean,
   campaign?: Campaign,
+  push?: ConflictPush,
 ): ConflictEvent {
   const leader = leaderRef(attacker.leader);
+  const data: ConflictEvent["data"] = { captured, leader };
+  if (campaign) data.campaign = campaign;
+  if (push) data.push = push;
   return withSummary<ConflictEvent>({
     type: "CONFLICT",
     tick,
     actors: [ref(attacker), ref(defender)],
     location: ref(world),
-    data: campaign ? { captured, campaign, leader } : { captured, leader },
+    data,
+  });
+}
+
+/**
+ * War is declared by `aggressor` upon `defender` (issue #24), optionally along
+ * the `system` frontier it ignites on. Opens the arc that clashes continue.
+ */
+export function warDeclared(
+  tick: number,
+  aggressor: Faction,
+  defender: Faction,
+  system?: StarSystem,
+): WarDeclaredEvent {
+  return withSummary<WarDeclaredEvent>({
+    type: "WAR_DECLARED",
+    tick,
+    actors: [ref(aggressor), ref(defender)],
+    location: system ? ref(system) : undefined,
+    data: { leader: leaderRef(aggressor.leader) },
+  });
+}
+
+/**
+ * A war ends decisively (issue #24). `victor` prevailed over `vanquished`;
+ * `outcome` is `conquest` (the aggressor broke its foe) or `repelled` (the
+ * defender outlasted the offensive). `since` is the war's opening cycle and
+ * `clashes` the battles it took.
+ */
+export function warEnded(
+  tick: number,
+  victor: Faction,
+  vanquished: Faction,
+  outcome: WarOutcome,
+  since: number,
+  clashes: number,
+): WarEndedEvent {
+  return withSummary<WarEndedEvent>({
+    type: "WAR_ENDED",
+    tick,
+    actors: [ref(victor), ref(vanquished)],
+    data: { outcome, since, clashes, leader: leaderRef(victor.leader) },
   });
 }
 
