@@ -100,6 +100,22 @@ export type DiplomacyKind =
   | "renounce";
 
 /**
+ * Where a recurring trade relationship stands (issue #40). A pair's first
+ * accord carries no phase; after that each repeat *progresses* instead of
+ * resetting: a `renewal` extends a living relationship, a `deepening` matures
+ * it into a standing partnership (after which routine commerce flows without
+ * making the news), and a `resumption` takes up a long-lapsed relationship
+ * again. So "struck a trade accord" can never loop verbatim dozens of times.
+ */
+export type TradePhase = "renewal" | "deepening" | "resumption";
+
+/** A recurring trade beat: its phase, and the 1-based accord count it marks. */
+export interface TradeMemory {
+  phase: TradePhase;
+  count: number;
+}
+
+/**
  * How a clash sat within its multi-cycle war (issue #24). A war is fought as a
  * moving front, not a single roll: `advance` is ground gained with the target
  * world still in enemy hands, `breakthrough` is the front finally cracking and
@@ -268,10 +284,17 @@ export interface FactionSecededEvent extends EventBase {
   data: { disposition: Disposition; leader: LeaderRef; worlds: number };
 }
 
-/** A world's environment turns — a discovery, depletion, or disaster. */
+/**
+ * A world's environment turns — a discovery, depletion, or disaster.
+ * `recurrence` is the 1-based count of *this* fortune kind on *this* world
+ * (issue #40), so a repeat reads as a continuing boom-and-bust story rather
+ * than the first find every time; `exhausted` marks the depletion that plays a
+ * world's reserves out for good — the arc's terminal beat, after which the
+ * world falls economically silent until a fresh discovery re-lights it.
+ */
 export interface WorldFortuneEvent extends EventBase {
   type: "WORLD_FORTUNE";
-  data: { fortune: FortuneKind };
+  data: { fortune: FortuneKind; recurrence: number; exhausted?: boolean };
 }
 
 /**
@@ -297,7 +320,7 @@ export interface LeadershipChangeEvent extends EventBase {
  */
 export interface DiplomacyEvent extends EventBase {
   type: "DIPLOMACY";
-  data: { kind: DiplomacyKind; leader: LeaderRef };
+  data: { kind: DiplomacyKind; leader: LeaderRef; trade?: TradeMemory };
 }
 
 /**
@@ -653,6 +676,39 @@ export function describe(event: WorldEvent): string {
       const faction = event.actors[0];
       const world = event.location?.name ?? "a frontier world";
       const holder = faction ? ` held by the ${faction.name}` : "";
+      const { recurrence, exhausted } = event.data;
+      // The depletion that plays a world out for good is the arc's terminal
+      // beat (issue #40): it reads as an ending, not another routine bust.
+      if (exhausted) {
+        return pickVariant(event, [
+          () => `The last seams of ${world}${holder} gave out; nothing of worth remains to mine.`,
+          () => `${world}${holder} was worked bare, its riches spent for good.`,
+          () => `The long boom and bust of ${world}${holder} ended in exhaustion, its lodes played out.`,
+        ])();
+      }
+      // A repeat names its place in the world's boom-and-bust story (issue
+      // #40), so the same world turning again reads as a continuing arc.
+      if (recurrence >= 2) {
+        const nth = ordinal(recurrence);
+        const byKindRecur: Record<FortuneKind, (() => string)[]> = {
+          discovery: [
+            () => `Fortune smiled again on ${world}${holder}: its ${nth} great strike.`,
+            () => `Prospectors on ${world}${holder} struck it rich once more — the ${nth} find of its boom.`,
+            () => `${world}${holder} boomed anew as a fresh lode came to light, its ${nth}.`,
+          ],
+          depletion: [
+            () => `Again the seams of ${world}${holder} ran thin — its ${nth} bust.`,
+            () => `The ${nth} bust struck ${world}${holder} as another lode gave out.`,
+            () => `${world}${holder} dimmed once more, its ${nth} depletion on record.`,
+          ],
+          disaster: [
+            () => `Disaster returned to ${world}${holder} — the ${nth} to ravage it.`,
+            () => `Calamity struck ${world}${holder} yet again, the ${nth} in its history.`,
+            () => `${world}${holder} reeled under its ${nth} catastrophe.`,
+          ],
+        };
+        return pickVariant(event, byKindRecur[event.data.fortune])();
+      }
       const byKind: Record<FortuneKind, (() => string)[]> = {
         discovery: [
           () => `Prospectors struck rich new deposits on ${world}${holder}.`,
@@ -742,6 +798,32 @@ export function describe(event: WorldEvent): string {
           () => `Done with diplomacy, the ${a} let its pact with the ${b} lapse into hostility.`,
         ],
       };
+      // A recurring trade relationship progresses through distinct beats
+      // (issue #40) instead of striking "a trade accord" verbatim forever:
+      // renewals extend it, a deepening matures it into a standing
+      // partnership, and a resumption takes up a long-lapsed relationship.
+      const trade = event.data.kind === "trade" ? event.data.trade : undefined;
+      if (trade) {
+        const nth = ordinal(trade.count);
+        const byPhase: Record<TradePhase, (() => string)[]> = {
+          renewal: [
+            () => `The ${a} and the ${b} renewed their trade accord — the ${nth} between them${where}.`,
+            () => `${lead} extended the ${a}'s accord with the ${b}, and commerce ran on.`,
+            () => `Trade between the ${a} and the ${b} carried on under a ${nth} accord.`,
+          ],
+          deepening: [
+            () => `Years of accords matured into a standing trade compact between the ${a} and the ${b}${where}.`,
+            () => `${lead} bound the markets of the ${a} to the ${b} for good; their commerce now runs without ceremony.`,
+            () => `What began as a single accord became an institution: the ${a} and the ${b} sealed a permanent trade compact.`,
+          ],
+          resumption: [
+            () => `After a long lapse, trade resumed between the ${a} and the ${b}${where}.`,
+            () => `${lead} reopened the lanes of the ${a} to the ${b}, ending years of dormant commerce.`,
+            () => `The old accords between the ${a} and the ${b} were dusted off, and goods moved once more.`,
+          ],
+        };
+        return pickVariant(event, byPhase[trade.phase])();
+      }
       return pickVariant(event, byKind[event.data.kind])();
     }
 
@@ -1002,19 +1084,27 @@ export function factionSeceded(
   });
 }
 
-/** A world's fortunes turn, for good (`discovery`) or ill. */
+/**
+ * A world's fortunes turn, for good (`discovery`) or ill. `recurrence`
+ * (default 1) counts this fortune kind's repeats on this world (issue #40);
+ * pass `exhausted` for the depletion that plays its reserves out for good.
+ */
 export function worldFortune(
   tick: number,
   faction: Faction | null,
   world: World,
   fortune: FortuneKind,
+  recurrence = 1,
+  exhausted = false,
 ): WorldFortuneEvent {
+  const data: WorldFortuneEvent["data"] = { fortune, recurrence };
+  if (exhausted) data.exhausted = true;
   return withSummary<WorldFortuneEvent>({
     type: "WORLD_FORTUNE",
     tick,
     actors: faction ? [ref(faction)] : [],
     location: ref(world),
-    data: { fortune },
+    data,
   });
 }
 
@@ -1049,7 +1139,9 @@ export function leadershipChange(
  * A political move between two powers (issue #24). `initiator` is the actor
  * driving it (the coercer of a threat, the betrayer of a betrayal); its leader
  * is named in the dispatch. `system`, when given, is the frontier they deal
- * across.
+ * across. For a recurring `trade`, `trade` places the accord in the
+ * relationship's history (issue #40) so the prose progresses instead of
+ * repeating; a pair's first accord omits it.
  */
 export function diplomacy(
   tick: number,
@@ -1057,13 +1149,16 @@ export function diplomacy(
   initiator: Faction,
   other: Faction,
   system?: StarSystem,
+  trade?: TradeMemory,
 ): DiplomacyEvent {
+  const data: DiplomacyEvent["data"] = { kind, leader: leaderRef(initiator.leader) };
+  if (trade) data.trade = trade;
   return withSummary<DiplomacyEvent>({
     type: "DIPLOMACY",
     tick,
     actors: [ref(initiator), ref(other)],
     location: system ? ref(system) : undefined,
-    data: { kind, leader: leaderRef(initiator.leader) },
+    data,
   });
 }
 

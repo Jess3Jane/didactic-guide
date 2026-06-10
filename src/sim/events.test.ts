@@ -348,6 +348,68 @@ group("narrative continuity (issue #20)", () => {
     );
   });
 
+  it("numbers a world's repeated fortunes in the prose (issue #40)", () => {
+    const third = worldFortune(60, helion, vex, "depletion", 3);
+    expect(third.data.recurrence).toBe(3);
+    expect(third.summary).toContain("third");
+    expect(third.summary).toContain("Vex-9");
+    expect(isGrammatical(third.summary)).toBe(true);
+    // The first occurrence is not numbered.
+    expect(worldFortune(8, helion, vex, "depletion").summary).not.toContain("third");
+    // Every kind reads its repeats distinctly, still grammatical.
+    for (const kind of ["discovery", "depletion", "disaster"] as const) {
+      for (let t = 0; t < 12; t++) {
+        const e = worldFortune(t, helion, vex, kind, 2);
+        expect(isGrammatical(e.summary)).toBe(true);
+        expect(e.summary).toContain("Vex-9");
+      }
+    }
+  });
+
+  it("reads a world's exhaustion as an ending, not another bust (issue #40)", () => {
+    for (let t = 0; t < 12; t++) {
+      const e = worldFortune(t, helion, vex, "depletion", 4, true);
+      expect(e.data.exhausted).toBe(true);
+      expect(e.summary).toMatch(/gave out|worked bare|exhaustion/);
+      expect(e.summary).toContain("Vex-9");
+      expect(isGrammatical(e.summary)).toBe(true);
+    }
+  });
+
+  it("progresses a trade relationship's prose through its phases (issue #40)", () => {
+    // A first accord carries no memory and keeps the original phrasing family.
+    const first = diplomacy(5, "trade", helion, iron, aldebaran);
+    expect(first.data.trade).toBeUndefined();
+
+    for (let t = 0; t < 12; t++) {
+      const renewal = diplomacy(t, "trade", helion, iron, aldebaran, {
+        phase: "renewal",
+        count: 2,
+      });
+      expect(renewal.summary).toMatch(/renew|extended|carried on/);
+      expect(isGrammatical(renewal.summary)).toBe(true);
+
+      const deepening = diplomacy(t, "trade", helion, iron, aldebaran, {
+        phase: "deepening",
+        count: 4,
+      });
+      expect(deepening.summary).toMatch(/compact|for good|institution/);
+      expect(isGrammatical(deepening.summary)).toBe(true);
+
+      const resumption = diplomacy(t, "trade", helion, iron, aldebaran, {
+        phase: "resumption",
+        count: 1,
+      });
+      expect(resumption.summary).toMatch(/resumed|reopened|dusted off|once more/);
+      expect(isGrammatical(resumption.summary)).toBe(true);
+
+      for (const e of [renewal, deepening, resumption]) {
+        expect(e.summary).toContain("Helion Compact");
+        expect(e.summary).toContain("Iron Dominion");
+      }
+    }
+  });
+
   it("reads a once-grown faction's collapse as a fall", () => {
     const fall = factionCollapsed(40, iron, 5);
     expect(fall.summary).toContain("5 worlds");
