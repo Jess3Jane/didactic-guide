@@ -37,6 +37,8 @@ import {
   worldFortune,
   leadershipChange,
   diplomacy,
+  warDeclared,
+  warEnded,
   sectorConcluded,
 } from "./events";
 import {
@@ -60,12 +62,17 @@ const CRISIS_THRESHOLD = 10;
 /** Per-action resource costs, paid by the acting faction. */
 const COST = {
   colonize: { population: 15, energy: 12, materials: 12 },
-  /** Mounting an assault. */
-  war: { population: 8, energy: 15, materials: 18 },
-  /** Extra attrition the attacker eats when an assault fails. */
-  warFailure: { population: 5, energy: 5, materials: 5 },
-  /** What the defender spends holding the line. */
-  defense: { energy: 8, materials: 8 },
+  /**
+   * Pressing a single clash. A multi-cycle war is many clashes (issue #24), so
+   * the per-clash cost is modest — enough to bleed an over-stretched campaign
+   * dry over time, but light enough that an aggressor can sustain an offensive
+   * across the several cycles a front takes to break.
+   */
+  war: { population: 4, energy: 8, materials: 9 },
+  /** Extra attrition the attacker eats when an assault is thrown back. */
+  warFailure: { population: 3, energy: 3, materials: 4 },
+  /** What the defender spends holding the line each clash. */
+  defense: { energy: 6, materials: 6 },
 } as const;
 
 /** What a CONSOLIDATE turn recovers — the pressure-release valve. */
@@ -241,6 +248,47 @@ const DIPLOMACY = {
   betrayalEdge: 1.3,
 } as const;
 
+// --- Phase 2: multi-cycle wars (issue #24) -----------------------------------
+//
+// Phase 1 resolved a war in a single roll: one clash, one world flips. That made
+// conquest feel like a coin toss and gave a war no shape. Here a war is a moving
+// *front* with momentum: each clash pushes the line forward (an `advance`) or
+// back (a `repulse`), and a world changes hands only once the attacker has built
+// enough momentum to break through. Momentum also tilts the next clash's odds —
+// a side that's winning presses its edge — so wars gather and lose steam legibly
+// across cycles, and end either decisively (the foe broken, or the offensive
+// spent) or by a negotiated peace. Momentum is oriented toward each war's
+// recorded aggressor; a clash struck by the other side (after a leadership change
+// flips who is the aggressor) pushes it the other way.
+const WAR = {
+  /** Ground an attacker win gains on the front. */
+  advance: 34,
+  /** Ground a defender win takes back. */
+  repulse: 26,
+  /** Momentum at which the front cracks and the contested world changes hands. */
+  breakthrough: 60,
+  /**
+   * Momentum shed once a world falls — less than a full reset, so a broken front
+   * keeps crumbling: a routed foe loses world after world in quick succession,
+   * which is how a war reaches a decisive conquest rather than stalling forever.
+   */
+  breakthroughRelief: 30,
+  /** Momentum (against the attacker) at which its offensive collapses — repelled. */
+  collapse: 96,
+  /** Momentum's pull on each clash's capture odds, per point. */
+  swing: 0.005,
+  /** Capture odds are kept off the rails so momentum tilts but never dictates. */
+  oddsFloor: 0.05,
+  oddsCeil: 0.95,
+  /**
+   * A war is only laid down by negotiation while it hangs in the balance: once
+   * the front has swung decisively (|momentum| past this), the winning side
+   * presses for a battlefield result instead of settling, so lopsided wars reach
+   * a conquest or a repulse rather than fizzling into peace.
+   */
+  peaceMomentum: 42,
+} as const;
+
 // --- Engine state ------------------------------------------------------------
 
 /** A single faction action resolved during a tick. */
@@ -368,11 +416,13 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   // Cumulative count of each crisis a faction has suffered, so a famine can
   // announce itself as "the third to scour its colonies".
   const crisisHistory = new Map<string, Record<ResourceKind, number>>();
-  // The running war per acquainted pair: when it began, when it last flared, and
-  // how many clashes it has seen — so repeated battles read as one campaign.
-  const campaigns = new Map<
+  // The running war per acquainted pair: who opened it, when it began, when it
+  // last flared, how many clashes it has seen, and the front's current momentum
+  // (oriented toward `attacker`; + means the aggressor is winning ground). So
+  // repeated battles read as one multi-cycle campaign with a shifting front.
+  const wars = new Map<
     string,
-    { since: number; lastClash: number; clash: number }
+    { attacker: string; since: number; lastClash: number; clash: number; momentum: number }
   >();
   // The most worlds each faction has ever held, so its collapse can recall the
   // height it fell from.
@@ -637,20 +687,27 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   };
 
   /**
-   * Record a clash between two factions and return its place in the running war
-   * (issue #20). A clash within `WAR_LULL` cycles of the last continues the
-   * campaign; a longer gap (or a first meeting) opens a fresh one.
+   * Open or continue the war between an aggressor and a defender, returning the
+   * live war record and whether this clash *opened* it (issue #24). A clash
+   * within `WAR_LULL` cycles of the last continues the campaign — accruing
+   * clashes and carrying its momentum forward; a longer gap (or a first strike)
+   * opens a fresh war, oriented toward the striking `aggressor`.
    */
-  const recordClash = (a: string, b: string, tick: number): Campaign => {
-    const key = pairKey(a, b);
-    const war = campaigns.get(key);
-    if (!war || tick - war.lastClash > WAR_LULL) {
-      campaigns.set(key, { since: tick, lastClash: tick, clash: 1 });
-      return { clash: 1, since: tick };
+  const pressWar = (
+    aggressor: string,
+    defender: string,
+    tick: number,
+  ): { war: { attacker: string; since: number; lastClash: number; clash: number; momentum: number }; declared: boolean } => {
+    const key = pairKey(aggressor, defender);
+    const existing = wars.get(key);
+    if (!existing || tick - existing.lastClash > WAR_LULL) {
+      const war = { attacker: aggressor, since: tick, lastClash: tick, clash: 1, momentum: 0 };
+      wars.set(key, war);
+      return { war, declared: true };
     }
-    war.clash += 1;
-    war.lastClash = tick;
-    return { clash: war.clash, since: war.since };
+    existing.clash += 1;
+    existing.lastClash = tick;
+    return { war: existing, declared: false };
   };
 
   /** Vent the friction a clash between two factions releases. */
@@ -709,7 +766,7 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
 
   /** Whether `a` and `b` are in an active war (a clash within the lull window). */
   const atWar = (a: string, b: string, tick: number): boolean => {
-    const war = campaigns.get(pairKey(a, b));
+    const war = wars.get(pairKey(a, b));
     return war !== undefined && tick - war.lastClash <= WAR_LULL;
   };
 
@@ -788,12 +845,21 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
         const where = contactSystem(a, b) ?? undefined;
         const healthy = !isStrained(a) && !isStrained(b);
 
-        // A war both sides are weary of is laid down before anything else.
+        // A war both sides are weary of is laid down before anything else — but
+        // only while it still hangs in the balance; a war one side is clearly
+        // winning is pressed to a battlefield result, not negotiated away.
         if (atWar(a.id, b.id, tick)) {
-          if ((isStrained(a) || isStrained(b)) && rng.bool(DIPLOMACY.chance.peace)) {
+          const balanced = Math.abs(wars.get(key)?.momentum ?? 0) < WAR.peaceMomentum;
+          if (
+            balanced &&
+            (isStrained(a) || isStrained(b)) &&
+            rng.bool(DIPLOMACY.chance.peace)
+          ) {
             pacts.set(key, "nonaggression");
             adjustStanding(a.id, b.id, DIPLOMACY.standing.peace);
             ventTension(a.id, b.id);
+            // Peace closes the war's arc: the front dissolves, momentum and all.
+            wars.delete(key);
             events.push(diplomacy(tick, "peace", a, b, where));
           }
           continue; // a pair at war pursues nothing else this cycle
@@ -899,6 +965,28 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
   };
 
   /**
+   * The world to press in an already-running war (issue #24). Once a war is
+   * declared it has its own momentum: the aggressor keeps the offensive up every
+   * cycle it can, not only when fresh tension boils over — so a campaign sustains
+   * across cycles and the front actually moves, rather than fizzling between
+   * sporadic clashes. Returns the weakest reachable world held by a foe this
+   * faction is the standing aggressor against, or null if it presses no war.
+   */
+  const activeWarTarget = (
+    faction: Faction,
+    owner: Map<string, string>,
+  ): World | null => {
+    for (const w of warTargets(faction, owner)) {
+      const ownerId = owner.get(w.id)!;
+      const war = wars.get(pairKey(faction.id, ownerId));
+      if (war && war.attacker === faction.id && currentTick - war.lastClash <= WAR_LULL) {
+        return w;
+      }
+    }
+    return null;
+  };
+
+  /**
    * A pact partner's holding an aggressor may betray, if any (issue #24).
    * Betrayal tempts only a sufficiently aggressive power whose pact has already
    * soured (standing at or below the betrayal line) and which clearly outweighs
@@ -961,6 +1049,11 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       // rest — peace between rivals is temporary, not a permanent equilibrium.
       const grudge = tensionWarTarget(faction, owner);
       if (grudge) return { kind: "WAR", target: grudge };
+      // A war already under way presses on under its own momentum, every cycle
+      // the aggressor can sustain it — so the front moves across cycles instead
+      // of stalling between fresh flare-ups (issue #24).
+      const press = activeWarTarget(faction, owner);
+      if (press) return { kind: "WAR", target: press };
       // A soured pact may tempt an aggressor into an opportunistic betrayal.
       const mark = betrayalTarget(faction, owner);
       if (mark) return { kind: "WAR", target: mark, betrayal: true };
@@ -1046,22 +1139,62 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
 
       pay(faction, COST.war);
 
+      // Open or continue the war, then resolve this clash as a push on its front
+      // (issue #24). A betrayal's opening strike doesn't announce a separate
+      // declaration — the broken pact already reads as hostilities opening.
+      const { war, declared } = pressWar(faction.id, defender.id, tick);
+      if (declared && !betrayal) {
+        events.push(
+          warDeclared(tick, faction, defender, world.systems[target.systemId]),
+        );
+      }
+
       // Capture odds weigh the attacker against the defender, who fights from
-      // home ground (hazardous worlds are harder to wrest away).
+      // home ground (hazardous worlds are harder to wrest away), then tilt with
+      // the front's momentum so a winning side presses its edge.
       const attack = strength(faction);
       const defend = strength(defender) * (1 + target.hazard * 0.5);
-      const captured = rng.next() < attack / (attack + defend);
+      const base = attack / (attack + defend);
+      // Momentum is stored toward the war's aggressor; `mine` re-orients it to
+      // whoever is striking now (the same faction, unless a leadership change has
+      // since flipped which side is the aggressor).
+      const sign = faction.id === war.attacker ? 1 : -1;
+      let mine = sign * war.momentum;
+      const odds = Math.max(
+        WAR.oddsFloor,
+        Math.min(WAR.oddsCeil, base + mine * WAR.swing),
+      );
+      const won = rng.next() < odds;
 
-      if (captured) {
-        defender.ownedWorldIds = defender.ownedWorldIds.filter(
-          (id) => id !== target.id,
-        );
-        faction.ownedWorldIds.push(target.id);
-        owner.set(target.id, faction.id);
+      let push: "advance" | "breakthrough" | "repulse";
+      let captured = false;
+      if (won) {
+        mine += WAR.advance;
+        if (mine >= WAR.breakthrough) {
+          // The front cracks: the world changes hands and the line re-forms.
+          push = "breakthrough";
+          captured = true;
+          mine -= WAR.breakthroughRelief;
+          defender.ownedWorldIds = defender.ownedWorldIds.filter(
+            (id) => id !== target.id,
+          );
+          faction.ownedWorldIds.push(target.id);
+          owner.set(target.id, faction.id);
+          pay(defender, { ...COST.defense });
+        } else {
+          // Ground gained, but the world holds — the siege presses on.
+          push = "advance";
+          pay(defender, { ...COST.defense });
+        }
       } else {
+        // Thrown back: the attacker eats extra attrition holding the assault open.
+        push = "repulse";
+        mine -= WAR.repulse;
         pay(faction, COST.warFailure);
         pay(defender, { ...COST.defense });
       }
+      war.momentum = sign * mine;
+
       settleResources(faction);
       settleResources(defender);
       ventTension(faction.id, defender.id);
@@ -1070,8 +1203,25 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       adjustStanding(faction.id, defender.id, -RELATIONS.clashBlow);
       // Place this clash within the ongoing war so the dispatch can read as a
       // campaign rather than an isolated skirmish (issue #20).
-      const campaign = recordClash(faction.id, defender.id, tick);
-      events.push(conflict(tick, faction, defender, target, captured, campaign));
+      const campaign: Campaign = { clash: war.clash, since: war.since };
+      events.push(conflict(tick, faction, defender, target, captured, campaign, push));
+
+      // A decisive end (issue #24): the foe is broken (conquest) when the
+      // breakthrough takes their last world, or the offensive collapses
+      // (repelled) once the striker is pushed past the breaking point.
+      const key = pairKey(faction.id, defender.id);
+      if (captured && defender.ownedWorldIds.length === 0) {
+        wars.delete(key);
+        events.push(
+          warEnded(tick, faction, defender, "conquest", war.since, war.clash),
+        );
+      } else if (mine <= -WAR.collapse) {
+        wars.delete(key);
+        ventTension(faction.id, defender.id);
+        events.push(
+          warEnded(tick, defender, faction, "repelled", war.since, war.clash),
+        );
+      }
       return events;
     }
 
@@ -1235,6 +1385,15 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
 
     // 4. Collapse anyone who was conquered down to nothing.
     events.push(...detectCollapses(t));
+
+    // 4a. Retire any war a collapse has left one-sided. A war the aggressor won
+    //     outright already closed with a WAR_ENDED conquest above; one whose
+    //     combatant fell to a *third* power (or alongside it) just dissolves —
+    //     there is no surviving front to fight over.
+    for (const key of [...wars.keys()]) {
+      const [a, b] = key.split("|");
+      if (collapsed.has(a) || collapsed.has(b)) wars.delete(key);
+    }
 
     // 4b. Leadership may turn over: a victorious commander rises, a fresh crisis
     //     topples a leader, or a long reign ends. Both upheavals key off this
