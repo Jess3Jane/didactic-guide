@@ -30,6 +30,7 @@ import {
   type FortuneKind,
   type Campaign,
   type LeadershipChange,
+  type CoupCause,
   factionFounded,
   factionSeceded,
   worldColonized,
@@ -1798,19 +1799,22 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
 
   /**
    * Turn over leadership where the moment calls for it. A fresh conqueror's
-   * victorious commander may seize power (`ascension`); a leader struck by a
-   * fresh crisis past a minimum tenure may be deposed (`coup`); and any seasoned
-   * leader may simply pass on (`succession`). Each installs a procedurally-named
-   * successor and emits a legible transition. The two upheavals hang off discrete
-   * moments this tick — a conquest, a new crisis — rather than a standing state,
-   * so leadership reads as an occasional beat, not a churn. Triggers are checked
-   * in priority order and draw from the rng only when their preconditions hold,
+   * victorious commander may seize power (`ascension`); a seasoned leader struck
+   * by visible trouble this cycle — a fresh crisis or ground lost on the
+   * battlefield — may be deposed (`coup`), the cause recorded so the deposition
+   * reads with a basis (issue #41); and any seasoned leader may simply pass on
+   * (`succession`). Each installs a procedurally-named successor and emits a
+   * legible transition. The upheavals hang off discrete moments this tick — a
+   * conquest, a new crisis, a defeat — rather than a standing state, so
+   * leadership reads as an occasional beat, not a churn. Triggers are checked in
+   * priority order and draw from the rng only when their preconditions hold,
    * keeping the change deterministic.
    */
   const updateLeadership = (
     tick: number,
     conquerors: Set<string>,
     freshCrises: Set<string>,
+    setbacks: Set<string>,
   ): WorldEvent[] => {
     const events: WorldEvent[] = [];
     for (const faction of living()) {
@@ -1818,16 +1822,17 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       const leader = faction.leader;
       const tenure = tick - leader.since;
       const seasoned = tenure >= LEADERSHIP.minTenure;
+      const troubled = freshCrises.has(faction.id) || setbacks.has(faction.id);
 
       let reason: LeadershipChange | null = null;
+      let cause: CoupCause | undefined;
       if (conquerors.has(faction.id) && rng.bool(LEADERSHIP.ascensionChance)) {
         reason = "ascension";
-      } else if (
-        seasoned &&
-        freshCrises.has(faction.id) &&
-        rng.bool(LEADERSHIP.coupChance)
-      ) {
+      } else if (seasoned && troubled && rng.bool(LEADERSHIP.coupChance)) {
         reason = "coup";
+        // A fresh crisis weighs heavier than lost ground: when both struck this
+        // cycle, the deposition reads as driven by the crisis.
+        cause = freshCrises.has(faction.id) ? "crisis" : "defeat";
       } else if (seasoned && rng.bool(LEADERSHIP.successionChance)) {
         reason = "succession";
       }
@@ -1849,6 +1854,7 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
           predecessor,
           tenure,
           world.systems[faction.homeSystemId],
+          cause,
         ),
       );
     }
@@ -1955,17 +1961,26 @@ export function createEngine(sector: Sector, rng: Rng): Engine {
       if (collapsed.has(a) || collapsed.has(b)) wars.delete(key);
     }
 
-    // 4b. Leadership may turn over: a victorious commander rises, a fresh crisis
-    //     topples a leader, or a long reign ends. Both upheavals key off this
+    // 4b. Leadership may turn over: a victorious commander rises, visible trouble
+    //     topples a leader, or a long reign ends. The upheavals key off this
     //     tick's own dispatches — conquerors are the attackers who took a world,
-    //     fresh crises the factions that just dropped into the red.
+    //     fresh crises the factions that just dropped into the red, and setbacks
+    //     the factions that lost ground this cycle (a world captured from them, or
+    //     a war they lost) — so a deposition follows trouble the reader saw.
     const conquerors = new Set<string>();
     const freshCrises = new Set<string>();
+    const setbacks = new Set<string>();
     for (const e of events) {
-      if (e.type === "CONFLICT" && e.data.captured) conquerors.add(e.actors[0].id);
-      else if (e.type === "RESOURCE_CRISIS") freshCrises.add(e.actors[0].id);
+      if (e.type === "CONFLICT" && e.data.captured) {
+        conquerors.add(e.actors[0].id);
+        setbacks.add(e.actors[1].id); // the defender just lost a world
+      } else if (e.type === "RESOURCE_CRISIS") {
+        freshCrises.add(e.actors[0].id);
+      } else if (e.type === "WAR_ENDED") {
+        setbacks.add(e.actors[1].id); // the vanquished side
+      }
     }
-    events.push(...updateLeadership(t, conquerors, freshCrises));
+    events.push(...updateLeadership(t, conquerors, freshCrises, setbacks));
 
     // 5. If the field has narrowed to one power (or none), the history ends.
     events.push(...assessConclusion(t));

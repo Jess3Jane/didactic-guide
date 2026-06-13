@@ -114,10 +114,13 @@ describe("a war ends decisively", () => {
   });
 
   it("never reopens clashes between a pair after their war has ended", () => {
-    // Once a WAR_ENDED closes the arc, the very next dispatch the pair shares
-    // (if any) must reopen with a fresh declaration — the old war is settled,
-    // so a later clash starts a new campaign at clash 1, never continuing the
-    // old count.
+    // Once a WAR_ENDED closes the arc, a pair may fight again only under a fresh
+    // declaration — the old war is settled, so any later clash belongs to a new
+    // campaign opened by a WAR_DECLARED, never continuing the old count. A new
+    // war can be declared the *same* cycle the old one ends (a repelled
+    // aggressor's foe striking straight back), so a WAR_DECLARED for the pair —
+    // not merely a later tick — is what clears the settled war; a clash seen with
+    // no such re-declaration must still be a clash-1 opener.
     for (let i = 0; i < 20; i++) {
       const log = run(engineFromSeed(`settled-${i}`), 250);
       const endedAt = new Map<string, number>();
@@ -125,9 +128,13 @@ describe("a war ends decisively", () => {
         const key = pairOf(e);
         if (e.type === "WAR_ENDED") {
           endedAt.set(key, e.tick);
+        } else if (e.type === "WAR_DECLARED" && endedAt.has(key)) {
+          // A fresh campaign legitimately opened: the settled war is closed out.
+          endedAt.delete(key);
         } else if (e.type === "CONFLICT" && endedAt.has(key)) {
           if (e.tick > endedAt.get(key)!) {
-            // A clash after a settled war must be the opener of a new one.
+            // A clash after a settled war, with no re-declaration, must be the
+            // opener of a new one.
             expect(e.data.campaign?.clash).toBe(1);
             endedAt.delete(key);
           }
