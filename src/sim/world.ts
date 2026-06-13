@@ -337,14 +337,26 @@ function uniqueNamer(rng: Rng, pool: readonly string[]): () => string {
  * Used both to seat founding leaders and, in the engine, to install successors
  * when leadership turns over (issue #23). Deterministic: all four draws (given
  * name, surname, title, trait) flow through `rng`.
+ *
+ * When `takenSurnames` is supplied, the surname draw retries a few times to dodge
+ * a name already in that set (issue #41): a founding sector that opened with two
+ * unrelated "Marrow" leaders read as a bug. This is deliberately *not* applied to
+ * mid-run successions — dynastic reuse of a surname within one faction over a long
+ * reign is a feature, not a collision.
  */
 export function generateLeader(
   rng: Rng,
   disposition: Disposition,
   since: number,
+  takenSurnames?: ReadonlySet<string>,
 ): Leader {
   const given = rng.pick(LEADER_GIVEN_NAMES);
-  const surname = rng.pick(LEADER_SURNAMES);
+  let surname = rng.pick(LEADER_SURNAMES);
+  if (takenSurnames) {
+    for (let i = 0; i < 8 && takenSurnames.has(surname); i++) {
+      surname = rng.pick(LEADER_SURNAMES);
+    }
+  }
   const title = rng.pick(LEADER_TITLES[disposition]);
   const trait = rng.pick(LEADER_TRAITS);
   return { name: `${given} ${surname}`, title, trait, since };
@@ -506,9 +518,13 @@ export function generateSector(rng: Rng, options: GenerateOptions = {}): Sector 
   });
 
   // 4. Seat a founding leader on each faction now that every disposition exists.
+  //    Surnames are kept distinct across this opening cast so no two unrelated
+  //    founders share a name (issue #41).
+  const foundingSurnames = new Set<string>();
   for (let f = 0; f < homeSystems.length; f++) {
     const faction = factions[`fac-${f}`];
-    faction.leader = generateLeader(rng, faction.disposition, 0);
+    faction.leader = generateLeader(rng, faction.disposition, 0, foundingSurnames);
+    foundingSurnames.add(faction.leader.name.split(" ")[1]);
   }
 
   return { seed, systems, worlds, factions, lanes };

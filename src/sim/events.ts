@@ -21,6 +21,7 @@ import type {
   Disposition,
   Faction,
   Leader,
+  LeaderTrait,
   Resources,
   StarSystem,
   World,
@@ -75,11 +76,19 @@ export type FortuneKind = "discovery" | "depletion" | "disaster";
 
 /**
  * How a leadership turned over (issue #23). `succession` — the incumbent died or
- * stepped down after a long tenure; `coup` — they were cast down amid crisis;
- * `ascension` — a commander rose on the back of a conquest. Each reads as a
- * distinct, legible transition in the chronicle.
+ * stepped down after a long tenure; `coup` — they were cast down amid visible
+ * trouble; `ascension` — a commander rose on the back of a conquest. Each reads
+ * as a distinct, legible transition in the chronicle.
  */
 export type LeadershipChange = "succession" | "coup" | "ascension";
+
+/**
+ * The visible trouble that topples a leader in a `coup` (issue #41), so a
+ * deposition has a basis the reader just saw rather than arriving from nowhere:
+ * `crisis` — a fresh resource crisis this cycle; `defeat` — ground lost on the
+ * battlefield. Carried only on coup events.
+ */
+export type CoupCause = "crisis" | "defeat";
 
 /**
  * A political move between two powers (issue #24). `pact` — a non-aggression
@@ -143,6 +152,12 @@ export type WarOutcome = "conquest" | "repelled";
 export interface LeaderRef {
   name: string;
   title: string;
+  /**
+   * The leader's behavioural lean (issue #41), carried on the ref so prose can
+   * read a new leader's bent — how they will steer the faction — without
+   * re-consulting the sector, and so a dispatch stays legible after they pass.
+   */
+  trait: LeaderTrait;
 }
 
 /**
@@ -309,6 +324,8 @@ export interface LeadershipChangeEvent extends EventBase {
     predecessor: LeaderRef;
     successor: LeaderRef;
     tenure: number;
+    /** For a `coup`, the visible trouble that toppled the leader (issue #41). */
+    cause?: CoupCause;
   };
 }
 
@@ -495,6 +512,20 @@ function ordinal(n: number): string {
 function styled(leader: LeaderRef): string {
   return `${leader.title} ${leader.name}`;
 }
+
+/**
+ * A trailing clause naming a new leader's bent (issue #41), so a succession reads
+ * as a turn in the faction's direction — not just a change of name. The phrasing
+ * mirrors the mechanical lean each trait gives the faction's aggression in the
+ * engine: `ambitious`/`ruthless` press outward, `cautious` pulls back, `stoic`
+ * holds the course. Each is a finished sentence appended after the transition.
+ */
+const LEADER_BENT: Record<LeaderTrait, string> = {
+  ambitious: " The new leader's ambition turned the faction's gaze outward, hungry for new ground.",
+  ruthless: " The new leader promised an iron hand, and rivals braced for a harder line.",
+  cautious: " The new leader counselled restraint, drawing the faction back from open confrontation.",
+  stoic: " The new leader pledged to hold the faction's steady course.",
+};
 
 /**
  * Render an event into a single, grammatical dispatch.
@@ -731,21 +762,32 @@ export function describe(event: WorldEvent): string {
 
     case "LEADERSHIP_CHANGE": {
       const f = event.actors[0].name;
-      const { reason, tenure } = event.data;
+      const { reason, tenure, cause } = event.data;
       const out = styled(event.data.predecessor);
       const inc = styled(event.data.successor);
       const reign =
         tenure >= 2 ? `${tenure} cycles` : tenure === 1 ? "a single cycle" : "a brief tenure";
-      const byReason: Record<LeadershipChange, (() => string)[]> = {
+      // A coup reads from the visible trouble that toppled the leader (issue #41)
+      // — a fresh crisis or ground lost on the battlefield, both of which the
+      // reader just saw — so the deposition has a basis instead of arriving from
+      // nowhere. Older coups carrying no cause fall back to the crisis phrasing.
+      const coupByCause: Record<CoupCause, (() => string)[]> = {
+        crisis: [
+          () => `Amid the crisis, the ${f} cast down ${out}; ${inc} seized command.`,
+          () => `${out} was deposed as the ${f} convulsed, and ${inc} took power.`,
+          () => `With turmoil at home, a bloodless purge unseated ${out}; ${inc} now commands the ${f}.`,
+        ],
+        defeat: [
+          () => `Blamed for the lost ground, ${out} was cast down; ${inc} seized command of the ${f}.`,
+          () => `The defeat broke ${out}'s grip on the ${f}, and ${inc} took power.`,
+          () => `With worlds slipping away, the ${f} unseated ${out}; ${inc} now commands.`,
+        ],
+      };
+      const byReason: Record<Exclude<LeadershipChange, "coup">, (() => string)[]> = {
         succession: [
           () => `${out} of the ${f} passed after ${reign} in command; ${inc} took up the mantle.`,
           () => `After ${reign} at the helm of the ${f}, ${out} stepped down, and ${inc} succeeded.`,
           () => `The long service of ${out} ended; ${inc} now leads the ${f}.`,
-        ],
-        coup: [
-          () => `Amid crisis, the ${f} cast down ${out}; ${inc} seized command.`,
-          () => `${out} was deposed as the ${f} convulsed, and ${inc} took power.`,
-          () => `A bloodless purge unseated ${out}; ${inc} now commands the ${f}.`,
         ],
         ascension: [
           () => `Borne up by victory, ${inc} supplanted ${out} atop the ${f}.`,
@@ -753,7 +795,13 @@ export function describe(event: WorldEvent): string {
           () => `The triumphant ${inc} swept ${out} aside to command the ${f}.`,
         ],
       };
-      return pickVariant(event, byReason[reason])();
+      const opening =
+        reason === "coup"
+          ? pickVariant(event, coupByCause[cause ?? "crisis"])()
+          : pickVariant(event, byReason[reason])();
+      // Close on the new leader's bent, so a succession visibly *changes* a
+      // faction's direction in prose as well as in its aggression (issue #41).
+      return `${opening}${LEADER_BENT[event.data.successor.trait]}`;
     }
 
     case "DIPLOMACY": {
@@ -878,7 +926,7 @@ function ref(entity: { id: string; name: string }): EntityRef {
 
 /** Denormalize a leader into a prose-ready `LeaderRef` (issue #23). */
 function leaderRef(leader: Leader): LeaderRef {
-  return { name: leader.name, title: leader.title };
+  return { name: leader.name, title: leader.title, trait: leader.trait };
 }
 
 /**
@@ -1120,6 +1168,7 @@ export function leadershipChange(
   predecessor: Leader,
   tenure: number,
   homeSystem?: StarSystem,
+  cause?: CoupCause,
 ): LeadershipChangeEvent {
   return withSummary<LeadershipChangeEvent>({
     type: "LEADERSHIP_CHANGE",
@@ -1131,6 +1180,7 @@ export function leadershipChange(
       predecessor: leaderRef(predecessor),
       successor: leaderRef(faction.leader),
       tenure,
+      ...(reason === "coup" && cause ? { cause } : {}),
     },
   });
 }

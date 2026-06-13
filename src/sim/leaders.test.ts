@@ -143,6 +143,90 @@ describe("leadership turnover", () => {
   });
 });
 
+describe("leaders with agency (issue #41)", () => {
+  it("seats founding leaders with distinct surnames", () => {
+    // A founding cast should never open with two unrelated leaders sharing a
+    // surname (the review flagged seed "tinotol" opening with two Marrows).
+    for (let i = 0; i < 40; i++) {
+      const seed = `founders-${i}`;
+      const sector = generateSector(createRng(seed), { seed });
+      const surnames = Object.values(sector.factions).map(
+        (f) => f.leader.name.split(" ")[1],
+      );
+      expect(new Set(surnames).size).toBe(surnames.length);
+    }
+    // The exact seed from the review, now deduplicated.
+    const tinotol = generateSector(createRng("tinotol"), { seed: "tinotol" });
+    const surnames = Object.values(tinotol.factions).map(
+      (f) => f.leader.name.split(" ")[1],
+    );
+    expect(new Set(surnames).size).toBe(surnames.length);
+  });
+
+  it("dodges a reserved surname when one is supplied", () => {
+    const baseline = generateLeader(createRng("dodge"), "militarist", 0);
+    const reserved = baseline.name.split(" ")[1];
+    const avoided = generateLeader(
+      createRng("dodge"),
+      "militarist",
+      0,
+      new Set([reserved]),
+    );
+    expect(avoided.name.split(" ")[1]).not.toBe(reserved);
+  });
+
+  it("grounds every coup in trouble the reader saw that same cycle", () => {
+    // A deposition must follow visible trouble — a fresh crisis or ground lost —
+    // and record which, so it never reads as arriving from nowhere.
+    let coups = 0;
+    for (let i = 0; i < 30; i++) {
+      const seed = `agency-${i}`;
+      const sector = generateSector(createRng(seed), { seed });
+      const engine = createEngine(sector, createRng(seed));
+      for (let t = 1; t <= 250; t++) {
+        const events = engine.tick();
+        const crisis = new Set<string>();
+        const setback = new Set<string>();
+        for (const e of events) {
+          if (e.type === "RESOURCE_CRISIS") crisis.add(e.actors[0].id);
+          else if (e.type === "CONFLICT" && e.data.captured) setback.add(e.actors[1].id);
+          else if (e.type === "WAR_ENDED") setback.add(e.actors[1].id);
+        }
+        for (const e of events) {
+          if (e.type !== "LEADERSHIP_CHANGE" || e.data.reason !== "coup") continue;
+          coups++;
+          const fid = e.actors[0].id;
+          expect(["crisis", "defeat"]).toContain(e.data.cause);
+          if (e.data.cause === "crisis") expect(crisis.has(fid)).toBe(true);
+          else expect(setback.has(fid)).toBe(true);
+        }
+      }
+    }
+    expect(coups).toBeGreaterThan(0);
+  });
+
+  it("names a new leader's bent so a succession reads as a turn", () => {
+    // The transition closes on the successor's behavioural lean — the same lean
+    // that steers the faction's aggression in the engine — so a change at the top
+    // visibly redirects the faction in prose, not just in the numbers.
+    const bent: Record<LeaderTrait, string> = {
+      ambitious: "ambition",
+      ruthless: "iron hand",
+      cautious: "restraint",
+      stoic: "steady course",
+    };
+    let checked = 0;
+    for (let i = 0; i < 15; i++) {
+      for (const e of run(engineFromSeed(`bent-${i}`), 200)) {
+        if (e.type !== "LEADERSHIP_CHANGE") continue;
+        expect(e.summary).toContain(bent[e.data.successor.trait]);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+});
+
 describe("determinism", () => {
   it("reproduces the same cast and successions for a seed", () => {
     const a = run(engineFromSeed("lineage"), 200).filter(
